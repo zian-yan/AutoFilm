@@ -193,8 +193,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
-
     use super::*;
 
     fn basic(username: &str, password: &str) -> String {

@@ -24,6 +24,11 @@ jobs:
 
   build-docker:
     needs: build-binary
+    # 复用工作流内部声明了 packages: write（推 GHCR），调用方必须显式授予，
+    # 否则整个 workflow 会在启动阶段直接 startup_failure。
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/build-docker.yaml
     with:
       push: true
