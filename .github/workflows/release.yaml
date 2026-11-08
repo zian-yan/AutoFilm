@@ -39,6 +39,9 @@ jobs:
   github-release:
     name: Create GitHub Release
     needs: [build-binary, build-docker]
+    # Docker 镜像是附加产物：即使镜像环节失败（比如未配置 Docker Hub 凭据），
+    # 只要二进制构建成功就继续发布 Release，避免整条流水线因此中断。
+    if: ${{ always() && needs.build-binary.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
