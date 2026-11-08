@@ -1,7 +1,15 @@
+# AutoFilm 业务配置示例（复制为 config.yaml 使用）
+#
+# 本文件只包含「业务数据」：AList 客户端、媒体服务器、同步 / 追番 / 海报任务。
+# Web 管理面板自身设置（监听地址、认证、文件监听）已拆分到 web.example.yaml，
+# 两份配置各自独立保存、互不覆盖。
+#
+# 整份配置允许为空：所有分区都可以省略，程序会按空配置启动。
+
 alist:                                      # AList 服务器列表（兼容 OpenList），支持多个服务器配置；每个服务器配置一个独立的 ID，供后续任务引用
   - id: 我的Alist                            # 标识 ID，用于关联 AList 客户端对象
-    base_url: http://alist:5244             # AList 服务器地址；未写协议时会默认补 https://
-    public_url: https://alist.example.com   # 公共访问地址，用于 AlistURL 模式生成 .strm 内容（可选）
+    base_url: http://alist:5244             # AList 服务器地址；需带 http:// 或 https:// 前缀
+    public_url: https://alist.example.com   # 公共访问地址，用于生成 .strm 内容（可选）
     username: admin                         # AList 用户名（使用 token 时可留空）
     password: adminadmin                    # AList 密码（使用 token 时可留空）
     otp_code:                               # AList 两步验证验证码（可选）
@@ -41,7 +49,6 @@ alist2strm_tasks:
     alist: 我的Alist                         # 关联上面定义的 AList 客户端 ID（可以多个任务关联同一个 AList 客户端实现复用）
     source_dir: /ani                        # AList 服务器上需要扫描的目录
     target_dir: /media/ani                  # 本地 .strm 和伴生文件输出目录
-    mode: AlistURL                          # .strm 内容模式：AlistURL、RawURL、AlistPath
     flatten_mode: false                     # 平铺模式；开启后所有 .strm 输出到同一级目录，且不会下载伴生文件
     overwrite: false                        # 覆盖模式；本地已存在同名文件时是否重新生成/下载
     concurrency: 50                         # 执行任务的最大并发处理数，可以减轻运行设备与 AList 服务器负载
@@ -53,11 +60,11 @@ alist2strm_tasks:
       other_ext: []                         # 自定义下载后缀列表，例如 [".zip", ".md"]
       concurrency: 5                        # 最大同时下载伴生文件数量
     sync:                                   # 同步远程相关配置
-      enabled: true                         # 是否同步服务器删除；开启后远端不存在的本地文件会被删除
+      enabled: true                         # 是否同步服务器删除；开启后远端不存在的本地文件会被删除（扫描失败的目录会自动排除）
       ignore: "\\.(nfo|jpg)$"               # 同步删除时忽略的文件名正则；仅匹配文件名，不匹配完整路径
-      smart_protection:                     # .strm 智能保护，仅在 sync.enabled 为 true 时生效
+      smart_protection:                     # 智能删除保护，仅在 sync.enabled 为 true 时生效
         enabled: true                       # 是否启用保护（默认 false）
-        threshold: 100                      # 触发保护的待删除 .strm 数量阈值
+        threshold: 100                      # 触发保护的待删除文件数量阈值（覆盖 .strm 与字幕/图片/nfo）
         grace_scans: 3                      # 达到阈值后，连续确认多少次才真正删除
 
   - id: 电影
@@ -65,7 +72,6 @@ alist2strm_tasks:
     alist: 使用Token认证的Alist
     source_dir: /movies
     target_dir: /media/movies
-    mode: RawURL
     flatten_mode: false
     overwrite: false
     concurrency: 20

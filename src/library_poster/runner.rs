@@ -189,7 +189,7 @@ impl LibraryPoster {
                 .download_image(&reference.item_id, reference.kind, reference.tag.as_deref())
                 .await
             {
-                Ok(bytes) => match image::load_from_memory(&bytes) {
+                Ok(bytes) => match decode_image(&bytes) {
                     Ok(image) => images.push(image),
                     Err(err) => warn!(
                         task_id = %self.config.id,
@@ -380,6 +380,28 @@ fn encode_png(image: image::RgbaImage) -> Result<Vec<u8>> {
         .write_to(&mut output, ImageFormat::Png)
         .map_err(Error::EncodeImage)?;
     Ok(output.into_inner())
+}
+
+/// 单张素材允许的最大边长。
+const MAX_IMAGE_SIDE: u32 = 8192;
+/// 解码期允许的最大内存分配，避免解压炸弹把进程撑爆。
+const MAX_IMAGE_ALLOC: u64 = 512 * 1024 * 1024;
+
+/// 解码远端图片，并限制解码尺寸与内存占用。
+///
+/// 媒体服务器返回的图片同样是外部输入：未设限时一张几 MB 的 PNG 可以解出
+/// 几 GB 像素数据。这里显式设置 `image::Limits`，超出限制的图片直接判为
+/// 解码失败并换下一张素材。
+fn decode_image(bytes: &[u8]) -> std::result::Result<DynamicImage, image::ImageError> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+
+    let mut reader =
+        image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits);
+    reader.decode()
 }
 
 fn output_path(output_dir: &Path, task_id: &str, library_name: &str) -> PathBuf {

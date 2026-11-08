@@ -8,6 +8,7 @@ use alist::{
     },
 };
 use chrono::{DateTime, TimeZone, Utc};
+use futures_util::StreamExt;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -22,6 +23,12 @@ use super::{
     },
 };
 
+/// 单次数据源响应允许的最大体积。
+///
+/// RSS 与目录接口返回的都是元数据，10 MiB 已经非常宽松；设置上限可以避免
+/// 异常或恶意响应把内存吃满。
+const MAX_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
@@ -34,6 +41,12 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("request failed with status {status}: {url}")]
     HttpStatus { status: StatusCode, url: String },
+    #[error("响应体积超过上限（{size} > {limit} 字节）: {url}")]
+    ResponseTooLarge {
+        size: u64,
+        limit: u64,
+        url: String,
+    },
 }
 
 #[derive(Debug)]
@@ -197,7 +210,7 @@ impl<T: TimeZone> Ani2Alist<T> {
                 url: url.to_string(),
             });
         }
-        Ok(response.text().await?)
+        read_limited(response, url).await
     }
 
     async fn get_json<R: serde::de::DeserializeOwned>(&self, url: &str) -> Result<R> {
@@ -209,9 +222,41 @@ impl<T: TimeZone> Ani2Alist<T> {
                 url: url.to_string(),
             });
         }
-        let body = response.text().await?;
+        let body = read_limited(response, url).await?;
         Ok(serde_json::from_str(&body)?)
     }
+}
+
+/// 读取响应体，并限制累计体积。
+///
+/// `Response::text()` / `bytes()` 会把整个响应读进内存，异常或恶意响应可以
+/// 直接把内存吃满，因此这里按块累计并在超限时立即中止。
+async fn read_limited(response: reqwest::Response, url: &str) -> Result<String> {
+    if let Some(length) = response.content_length() {
+        if length > MAX_RESPONSE_BYTES {
+            return Err(Error::ResponseTooLarge {
+                size: length,
+                limit: MAX_RESPONSE_BYTES,
+                url: url.to_string(),
+            });
+        }
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len() as u64 + chunk.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(Error::ResponseTooLarge {
+                size: body.len() as u64 + chunk.len() as u64,
+                limit: MAX_RESPONSE_BYTES,
+                url: url.to_string(),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 fn normalize_mount_path(path: &str) -> String {

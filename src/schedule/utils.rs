@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use alist::Client;
 use tracing::{debug, error, warn};
@@ -7,6 +13,53 @@ use crate::{
     alist::{AlistConfig, build_client},
     media_server,
 };
+
+/// 任务级并发闸门。
+///
+/// 定时任务的执行时长可能超过 cron 间隔（例如媒体库很大时一次同步要跑几十分）。
+/// 没有互斥时同一任务会被重复触发，两轮任务会同时读写同一批 `.strm` 与保护
+/// 状态文件，既可能互相覆盖也可能造成误删。
+#[derive(Debug, Default)]
+pub struct TaskRunGuard {
+    running: Arc<AtomicBool>,
+}
+
+impl TaskRunGuard {
+    /// 尝试占用执行权；已有实例在运行时返回 `None`。
+    pub fn try_acquire(&self) -> Option<TaskRunSlot> {
+        self.running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| TaskRunSlot {
+                running: self.running.clone(),
+            })
+    }
+}
+
+/// 执行权凭据，离开作用域时自动释放。
+pub struct TaskRunSlot {
+    running: Arc<AtomicBool>,
+}
+
+impl Drop for TaskRunSlot {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Release);
+    }
+}
+
+/// 全进程共享的任务闸门表。
+///
+/// 热重载会重建调度器；如果闸门只挂在单次调度器实例上，旧调度器里仍在运行的
+/// 任务会和新调度器的同类任务并发执行。这里按「模块:任务 ID」在进程内共享闸门，
+/// 让热重载前后的同一任务依然互斥。
+static RUN_GUARDS: OnceLock<Mutex<HashMap<String, Arc<TaskRunGuard>>>> = OnceLock::new();
+
+/// 取得（或创建）指定任务的共享闸门。
+pub fn shared_guard(key: &str) -> Arc<TaskRunGuard> {
+    let registry = RUN_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|err| err.into_inner());
+    registry.entry(key.to_string()).or_default().clone()
+}
 
 pub async fn create_alist_clients(
     alist_configs: &Vec<AlistConfig>,
@@ -89,6 +142,25 @@ pub fn create_media_server_clients(
 mod tests {
     use super::*;
     use crate::media_server::Kind;
+
+    #[test]
+    fn guards_are_mutually_exclusive_and_shared_by_key() {
+        let guard = shared_guard("test:任务");
+        let other_reference = shared_guard("test:任务");
+        assert!(Arc::ptr_eq(&guard, &other_reference));
+
+        let slot = guard.try_acquire().expect("首次应能占用执行权");
+        assert!(
+            other_reference.try_acquire().is_none(),
+            "运行中的任务不应被重复调度"
+        );
+        drop(slot);
+        assert!(guard.try_acquire().is_some(), "任务结束后应重新获得执行权");
+
+        // 不同任务互不影响。
+        let other = shared_guard("test:另一个任务");
+        assert!(other.try_acquire().is_some());
+    }
 
     #[test]
     fn creates_unique_media_server_clients() {

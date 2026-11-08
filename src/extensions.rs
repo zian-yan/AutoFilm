@@ -6,6 +6,6 @@ pub const VIDEO_EXTS: &[&str] = &[
 // 可选下载的伴生文件类型，行为与 Python 版本保持一致。
 pub const SUBTITLE_EXTS: &[&str] = &[".ass", ".srt", ".ssa", ".sub"];
 
-pub const IMAGE_EXTS: &[&str] = &[".png", ".jpg"];
+pub const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg", ".webp"];
 
 pub const NFO_EXTS: &[&str] = &[".nfo"];

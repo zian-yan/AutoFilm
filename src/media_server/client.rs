@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use reqwest::{RequestBuilder, Url};
 use serde::de::DeserializeOwned;
 
@@ -8,6 +9,9 @@ use super::{
     error::{Error, Result},
     models::{ImageKind, Library, MediaItem, QueryResult, User},
 };
+
+/// 单张媒体图片允许的最大体积。
+const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -111,6 +115,8 @@ impl Client {
     }
 
     /// 下载指定媒体项目的 Primary 或 Backdrop 图片。
+    ///
+    /// 图片体积设有上限，避免异常响应把内存吃满（解码侧另有尺寸限制）。
     pub async fn download_image(
         &self,
         item_id: &str,
@@ -123,7 +129,30 @@ impl Client {
             .request(reqwest::Method::GET, &path, &query)?
             .send()
             .await?;
-        Ok(Self::success(response).await?.bytes().await?.to_vec())
+        let response = Self::success(response).await?;
+
+        if let Some(length) = response.content_length() {
+            if length > MAX_IMAGE_BYTES {
+                return Err(Error::ImageTooLarge {
+                    size: length,
+                    limit: MAX_IMAGE_BYTES,
+                });
+            }
+        }
+
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if body.len() as u64 + chunk.len() as u64 > MAX_IMAGE_BYTES {
+                return Err(Error::ImageTooLarge {
+                    size: body.len() as u64 + chunk.len() as u64,
+                    limit: MAX_IMAGE_BYTES,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
 
     /// 使用媒体服务器要求的 Base64 请求体更新媒体库 Primary 图片。

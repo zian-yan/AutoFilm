@@ -2,11 +2,12 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
+    time::Duration,
 };
 
 use alist::{
     Client,
-    models::fs::{FsGetReq, FsListReq},
+    models::fs::{FsListReq, ObjResp},
 };
 use futures_util::{
     future::FutureExt,
@@ -19,15 +20,25 @@ use tracing::{debug, info, warn};
 
 use crate::{
     alist2strm::{
-        config::{Config, Mode, SmartProtectionConfig},
+        config::{Config, SmartProtectionConfig},
         errors::{Error, Result},
-        path::{AlistPath, bdmv_root, is_bdmv_file},
+        path::{self, bdmv_root, download_url, is_bdmv_file, join_alist_path, suffix_of},
         protection::ProtectionManager,
         summary::{RunStats, RunSummary},
         utils::{collect_local_files, companion_file_is_stale, remove_empty_parents},
     },
     extensions::{IMAGE_EXTS, NFO_EXTS, SUBTITLE_EXTS, VIDEO_EXTS},
 };
+
+/// 单个伴生文件的下载体积上限。
+///
+/// 字幕、图片、nfo 远小于该值；设置上限可以防止异常或恶意的 AList 响应把
+/// 本地磁盘写满。
+const MAX_ATTACHMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// 连接 AList 的超时时间，避免站点无响应时任务永久挂起。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[derive(Debug, Clone)]
 pub struct Alist2Strm {
     config: Config,
@@ -46,6 +57,20 @@ struct RunContext {
     process_exts: HashSet<String>,
     sync_ignore_pattern: Option<Regex>,
     stats: Arc<RunStats>,
+}
+
+/// 扫描阶段对单个远端文件的处理决策。
+///
+/// BDMV 主片必须等同目录所有 m2ts 收集完成后才能按大小选片，因此单独分出
+/// `Bdmv` 分支，避免提前进入并发处理队列。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathDecision {
+    /// 需要立即进入处理队列。
+    Process,
+    /// 属于 BDMV 主片候选，先收集，扫描结束后统一选片。
+    Bdmv,
+    /// 直接跳过该文件。
+    Skip,
 }
 
 impl Alist2Strm {
@@ -72,13 +97,16 @@ impl Alist2Strm {
         let context = Arc::new(self.create_context(stats.clone()).await?);
         info!(task_id = %self.config.id, source_dir = %self.config.source_dir, "开始扫描 AList 目录");
         let mut processed_local_paths = HashSet::new();
-        let mut bdmv_collections: HashMap<String, Vec<AlistPath>> = HashMap::new();
+        let mut bdmv_collections: HashMap<String, Vec<(String, ObjResp)>> = HashMap::new();
+        // 记录扫描失败的远端目录，用于把对应本地子树排除出删除集合。
+        let mut unscanned_dirs: Vec<String> = Vec::new();
 
         // 第一阶段边遍历远端文件边处理普通文件；BDMV 文件先收集，扫描结束后再选主片处理。
         self.collect_and_process_paths(
             context.clone(),
             &mut processed_local_paths,
             &mut bdmv_collections,
+            &mut unscanned_dirs,
         )
         .await?;
 
@@ -91,19 +119,65 @@ impl Alist2Strm {
         if !bdmv_paths.is_empty() {
             info!(count = bdmv_paths.len(), "开始处理 BDMV 主片文件");
         }
-        for path in &bdmv_paths {
-            let local_path = self.local_path(path);
+        for (full_path, object) in &bdmv_paths {
+            let local_path = self.local_path(full_path, &object.name);
             processed_local_paths.insert(local_path);
         }
         self.process_paths(context.clone(), bdmv_paths).await?;
 
         if self.sync_enabled() {
-            self.cleanup_local_files(&context, processed_local_paths)
+            self.cleanup_after_scan(&context, processed_local_paths, &unscanned_dirs)
                 .await?;
         }
 
         let summary = stats.summarize(&self.config);
         Ok(summary)
+    }
+
+    /// 在扫描结果基础上执行本地清理。
+    ///
+    /// 扫描失败的目录不能当成「远端已删除」，否则一次网络抖动就会清空本地
+    /// 媒体库。这里把失败目录映射成本地子树排除掉；平铺模式无法按目录区分，
+    /// 只能整轮跳过清理。
+    async fn cleanup_after_scan(
+        &self,
+        context: &RunContext,
+        processed_local_paths: HashSet<PathBuf>,
+        unscanned_dirs: &[String],
+    ) -> Result<()> {
+        let mut excluded_prefixes = Vec::new();
+
+        if !unscanned_dirs.is_empty() {
+            if self.config.flatten_mode {
+                warn!(
+                    task_id = %self.config.id,
+                    unscanned_dir_count = unscanned_dirs.len(),
+                    "存在未扫描成功的目录且启用了平铺模式，本轮跳过本地清理以避免误删"
+                );
+                return Ok(());
+            }
+
+            excluded_prefixes = unscanned_dirs
+                .iter()
+                .filter_map(|dir| {
+                    path::local_dir(
+                        &self.config.source_dir,
+                        &self.config.target_dir,
+                        dir,
+                        self.config.flatten_mode,
+                    )
+                })
+                .collect();
+            warn!(
+                task_id = %self.config.id,
+                unscanned_dir_count = unscanned_dirs.len(),
+                excluded_prefix_count = excluded_prefixes.len(),
+                "存在未扫描成功的目录，已排除对应本地子树后执行清理"
+            );
+        }
+
+        self.cleanup_local_files(context, processed_local_paths, &excluded_prefixes)
+            .await
     }
 
     /// 创建本次运行共享的上下文。
@@ -132,6 +206,7 @@ impl Alist2Strm {
             client,
             http: reqwest::Client::builder()
                 .user_agent(format!("AutoFilm/{}", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(CONNECT_TIMEOUT)
                 .build()?,
             server_url: self.server_url.clone(),
             base_path: me.base_path,
@@ -152,7 +227,8 @@ impl Alist2Strm {
         &self,
         context: Arc<RunContext>,
         processed_local_paths: &mut HashSet<PathBuf>,
-        bdmv_collections: &mut HashMap<String, Vec<AlistPath>>,
+        bdmv_collections: &mut HashMap<String, Vec<(String, ObjResp)>>,
+        unscanned_dirs: &mut Vec<String>,
     ) -> Result<()> {
         // 使用显式栈递归遍历，避免深层目录导致函数递归过深。
         let mut stack = vec![self.config.source_dir.clone()];
@@ -169,6 +245,8 @@ impl Alist2Strm {
                 Ok(resp) => resp,
                 Err(err) => {
                     RunStats::inc(&context.stats.skipped_dir_count);
+                    // 该目录下的文件状态未知，不能参与后续删除判定。
+                    unscanned_dirs.push(dir_path.clone());
                     warn!(
                         task_id = %self.config.id,
                         dir_path = %dir_path,
@@ -187,47 +265,56 @@ impl Alist2Strm {
                 "AList 目录扫描完成"
             );
             for item in resp.content {
-                let path = AlistPath::from_obj(
-                    context.server_url.clone(),
-                    context.base_path.clone(),
-                    &dir_path,
-                    item.object,
-                );
+                let object = item.object;
+                let full_path = join_alist_path(&dir_path, &object.name);
 
-                if path.is_dir {
+                if object.is_dir {
                     debug!(
                         task_id = %self.config.id,
-                        dir_path = %path.full_path,
+                        dir_path = %full_path,
                         "发现 AList 子目录，加入扫描队列"
                     );
-                    stack.push(path.full_path.clone());
+                    stack.push(full_path);
                     continue;
                 }
                 RunStats::inc(&context.stats.discovered_file_count);
 
-                match self.should_process_path(
-                    &context,
-                    &path,
-                    processed_local_paths,
-                    bdmv_collections,
-                ) {
-                    Ok(true) => {
+                match self
+                    .classify_path(&context, &full_path, &object, processed_local_paths)
+                    .await
+                {
+                    Ok(PathDecision::Process) => {
                         debug!(
                             task_id = %self.config.id,
-                            path = %path.full_path,
+                            path = %full_path,
                             "AList 路径加入处理队列"
                         );
-                        pending.push(self.process_path_logged(context.clone(), path).boxed());
+                        pending.push(
+                            self.process_path_logged(context.clone(), full_path, object)
+                                .boxed(),
+                        );
                         while pending.len() >= concurrency {
                             pending.next().await;
                         }
                     }
-                    Ok(false) => {}
+                    Ok(PathDecision::Bdmv) => {
+                        // BDMV 需要等同目录所有 m2ts 都收集完，才能按大小选主片。
+                        if let Some(root) = bdmv_root(&full_path) {
+                            debug!(
+                                task_id = %self.config.id,
+                                path = %full_path,
+                                "收集 BDMV 主片候选文件"
+                            );
+                            bdmv_collections.entry(root).or_default().push((full_path, object));
+                            RunStats::inc(&context.stats.bdmv_collection_count);
+                        }
+                    }
+                    Ok(PathDecision::Skip) => {}
                     Err(err) => {
                         RunStats::inc(&context.stats.failed_path_count);
                         warn!(
                             task_id = %self.config.id,
-                            path = %path.full_path,
+                            path = %full_path,
                             error = %err,
                             "判断 AList 路径是否需要处理失败，已跳过该路径"
                         );
@@ -241,70 +328,70 @@ impl Alist2Strm {
         Ok(())
     }
 
-    /// 判断一个远端路径是否需要进入处理流程。
+    /// 判断一个远端文件应该如何进入处理流程。
     ///
     /// 函数会过滤系统文件、非目标扩展名、BDMV 内部非主片候选文件，并维护
     /// `processed_local_paths` 用于后续同步清理。对于本地已存在的文件，
     /// `overwrite=false` 时会跳过；伴生文件如果过期或大小偏小则仍会重新处理。
-    fn should_process_path(
+    async fn classify_path(
         &self,
         context: &RunContext,
-        path: &AlistPath,
+        full_path: &str,
+        object: &ObjResp,
         processed_local_paths: &mut HashSet<PathBuf>,
-        bdmv_collections: &mut HashMap<String, Vec<AlistPath>>,
-    ) -> Result<bool> {
-        if path.full_path.contains("@eaDir")
-            || path.full_path.contains("Thumbs.db")
-            || path.full_path.contains(".DS_Store")
+    ) -> Result<PathDecision> {
+        if full_path.contains("@eaDir")
+            || full_path.contains("Thumbs.db")
+            || full_path.contains(".DS_Store")
         {
-            debug!(path = %path.full_path, "跳过系统文件");
+            debug!(path = %full_path, "跳过系统文件");
             RunStats::inc(&context.stats.filtered_file_count);
-            return Ok(false);
+            return Ok(PathDecision::Skip);
         }
 
-        if path.full_path.contains("/BDMV/") && !is_bdmv_file(path) {
-            debug!(path = %path.full_path, "跳过 BDMV 内部非主片候选文件");
+        if full_path.contains("/BDMV/") && !is_bdmv_file(full_path, &object.name) {
+            debug!(path = %full_path, "跳过 BDMV 内部非主片候选文件");
             RunStats::inc(&context.stats.filtered_file_count);
-            return Ok(false);
+            return Ok(PathDecision::Skip);
         }
 
-        let suffix = path.suffix();
+        let suffix = suffix_of(&object.name);
         if !context.process_exts.contains(&suffix) {
-            debug!(path = %path.full_path, suffix = %suffix, "文件后缀不在处理列表中");
+            debug!(path = %full_path, suffix = %suffix, "文件后缀不在处理列表中");
             RunStats::inc(&context.stats.filtered_file_count);
-            return Ok(false);
+            return Ok(PathDecision::Skip);
         }
         RunStats::inc(&context.stats.matched_file_count);
 
-        if is_bdmv_file(path) {
-            // BDMV 需要等同目录所有 m2ts 都收集完，才能按大小选主片。
-            if let Some(root) = bdmv_root(path) {
-                bdmv_collections.entry(root).or_default().push(path.clone());
-                RunStats::inc(&context.stats.bdmv_collection_count);
-            }
-            return Ok(false);
+        if is_bdmv_file(full_path, &object.name) {
+            return Ok(PathDecision::Bdmv);
         }
 
-        let local_path = self.local_path(path);
+        let local_path = self.local_path(full_path, &object.name);
         processed_local_paths.insert(local_path.clone());
 
-        if !self.config.overwrite && local_path.exists() {
+        if !self.config.overwrite && fs::try_exists(&local_path).await? {
             if context.download_exts.contains(&suffix)
-                && companion_file_is_stale(&local_path, path)?
+                && companion_file_is_stale(
+                    &local_path,
+                    object.size.max(0) as u64,
+                    object.modified.timestamp(),
+                )
+                .await?
             {
-                debug!(path = %path.full_path, local_path = %local_path.display(), "伴生文件已过期或大小不一致，重新处理");
-                return Ok(true);
+                debug!(path = %full_path, local_path = %local_path.display(), "伴生文件已过期或大小不一致，重新处理");
+                return Ok(PathDecision::Process);
             }
-            debug!(path = %path.full_path, local_path = %local_path.display(), "本地文件已存在，跳过处理");
+            debug!(path = %full_path, local_path = %local_path.display(), "本地文件已存在，跳过处理");
             if local_path.extension().and_then(|ext| ext.to_str()) == Some("strm") {
                 RunStats::inc(&context.stats.strm_skipped_count);
             } else {
                 RunStats::inc(&context.stats.attachment_skipped_count);
             }
-            return Ok(false);
+            return Ok(PathDecision::Skip);
         }
 
-        Ok(true)
+        Ok(PathDecision::Process)
     }
 
     /// 并发处理一组已经确定需要处理的路径。
@@ -312,12 +399,16 @@ impl Alist2Strm {
     /// 该函数主要用于扫描结束后的 BDMV 主片批处理；普通文件在扫描阶段已经
     /// 通过 `collect_and_process_paths` 边扫描边提交。每个路径的失败会被记录并
     /// 跳过，不会中断同批次其它路径。
-    async fn process_paths(&self, context: Arc<RunContext>, paths: Vec<AlistPath>) -> Result<()> {
+    async fn process_paths(
+        &self,
+        context: Arc<RunContext>,
+        files: Vec<(String, ObjResp)>,
+    ) -> Result<()> {
         // 用 bounded concurrency 限制并发处理数量，避免压垮 AList 或本地 IO。
-        futures_util::stream::iter(paths)
-            .for_each_concurrent(self.config.concurrency.max(1), |path| {
+        futures_util::stream::iter(files)
+            .for_each_concurrent(self.config.concurrency.max(1), |(full_path, object)| {
                 let context = context.clone();
-                self.process_path_logged(context, path)
+                self.process_path_logged(context, full_path, object)
             })
             .await;
 
@@ -326,11 +417,15 @@ impl Alist2Strm {
 
     /// 包装单路径处理并记录错误。
     ///
-    /// 该函数把 `process_path` 的错误降级为警告日志，使单个文件的 RawURL 获取、
-    /// `.strm` 写入或伴生文件下载失败不会影响后续路径继续处理。
-    async fn process_path_logged(&self, context: Arc<RunContext>, path: AlistPath) {
-        let full_path = path.full_path.clone();
-        if let Err(err) = self.process_path(&context, path).await {
+    /// 该函数把 `process_path` 的错误降级为警告日志，使单个文件的 `.strm` 写入
+    /// 或伴生文件下载失败不会影响后续路径继续处理。
+    async fn process_path_logged(
+        &self,
+        context: Arc<RunContext>,
+        full_path: String,
+        object: ObjResp,
+    ) {
+        if let Err(err) = self.process_path(&context, &full_path, &object).await {
             RunStats::inc(&context.stats.failed_path_count);
             warn!(
                 task_id = %self.config.id,
@@ -341,43 +436,30 @@ impl Alist2Strm {
         }
     }
 
-    /// 处理单个远端文件路径。
+    /// 处理单个远端文件。
     ///
-    /// 根据配置模式生成 `.strm` 内容或下载伴生文件：`RawURL` 模式会先调用
-    /// `/api/fs/get` 补充原始下载地址；视频文件写入本地 `.strm`，字幕、图片、
-    /// nfo 等伴生文件则从 AList 下载链接保存到本地。
-    async fn process_path(&self, context: &RunContext, mut path: AlistPath) -> Result<()> {
+    /// 视频文件写入本地 `.strm`，字幕、图片、nfo 等伴生文件则从 AList 下载
+    /// 链接保存到本地。
+    async fn process_path(
+        &self,
+        context: &RunContext,
+        full_path: &str,
+        object: &ObjResp,
+    ) -> Result<()> {
         debug!(
             task_id = %self.config.id,
-            path = %path.full_path,
-            mode = ?self.config.mode,
+            path = %full_path,
             "正在处理 AList 路径"
         );
 
-        if self.config.mode == Mode::RawURL && path.raw_url.is_none() {
-            // RawURL 只有 `/api/fs/get` 才会返回，遍历列表时按需补取详情。
-            debug!(
-                task_id = %self.config.id,
-                path = %path.full_path,
-                "正在获取 AList 路径详情以生成 RawURL"
-            );
-            let detail = context
-                .client
-                .fs_get(FsGetReq {
-                    path: path.full_path.clone(),
-                    password: String::new(),
-                    page: None,
-                    per_page: None,
-                    refresh: None,
-                })
-                .await?;
-            path = path.with_raw_url(detail.raw_url);
+        let local_path = self.local_path(full_path, &object.name);
+        // 双保险：路径规则已经过滤了 `..` 与绝对路径，这里再确认结果没有越界。
+        if !local_path.starts_with(&self.config.target_dir) {
+            return Err(Error::UnsafeLocalPath { path: local_path });
         }
-
-        let local_path = self.local_path(&path);
         debug!(
             task_id = %self.config.id,
-            remote_path = %path.full_path,
+            remote_path = %full_path,
             local_path = %local_path.display(),
             "已计算本地目标路径"
         );
@@ -385,21 +467,26 @@ impl Alist2Strm {
             fs::create_dir_all(parent).await?;
         }
 
+        let url = download_url(&context.server_url, &context.base_path, full_path, &object.sign);
         if local_path.extension().and_then(|ext| ext.to_str()) == Some("strm") {
             let existed_before = fs::try_exists(&local_path).await?;
             // 视频文件写入 .strm 内容；伴生文件则直接下载到本地。
-            let Some(content) = self.strm_content(&path) else {
-                RunStats::inc(&context.stats.failed_path_count);
-                warn!(path = %path.full_path, "生成 .strm 的内容为空，跳过");
-                return Ok(());
-            };
             debug!(
                 task_id = %self.config.id,
-                remote_path = %path.full_path,
+                remote_path = %full_path,
                 local_path = %local_path.display(),
                 "正在写入 strm 文件"
             );
-            fs::write(&local_path, content).await?;
+            // 同样先写临时文件再改名，避免进程中断留下截断的 .strm。
+            let temp_path = temp_file_path(&local_path);
+            if let Err(err) = fs::write(&temp_path, url).await {
+                let _ = fs::remove_file(&temp_path).await;
+                return Err(err.into());
+            }
+            if let Err(err) = fs::rename(&temp_path, &local_path).await {
+                let _ = fs::remove_file(&temp_path).await;
+                return Err(err.into());
+            }
             if existed_before {
                 RunStats::inc(&context.stats.strm_updated_count);
             } else {
@@ -407,7 +494,7 @@ impl Alist2Strm {
             }
             info!(
                 task_id = %self.config.id,
-                remote_path = %path.full_path,
+                remote_path = %full_path,
                 local_path = %local_path.display(),
                 "strm 文件创建成功"
             );
@@ -415,12 +502,11 @@ impl Alist2Strm {
             let existed_before = fs::try_exists(&local_path).await?;
             debug!(
                 task_id = %self.config.id,
-                remote_path = %path.full_path,
+                remote_path = %full_path,
                 local_path = %local_path.display(),
                 "正在下载 AList 伴生文件"
             );
-            self.download_file(context, &path.download_url(), &local_path)
-                .await?;
+            self.download_file(context, &url, &local_path).await?;
             if existed_before {
                 RunStats::inc(&context.stats.attachment_updated_count);
             } else {
@@ -428,7 +514,7 @@ impl Alist2Strm {
             }
             info!(
                 task_id = %self.config.id,
-                remote_path = %path.full_path,
+                remote_path = %full_path,
                 local_path = %local_path.display(),
                 "伴生文件下载成功"
             );
@@ -437,24 +523,12 @@ impl Alist2Strm {
         Ok(())
     }
 
-    /// 生成 `.strm` 文件内容。
-    ///
-    /// `AlistURL` 返回 AList `/d` 下载链接并可替换为 `public_url`；
-    /// `RawURL` 返回上游原始下载地址；`AlistPath` 返回远端路径本身。
-    /// 如果所需信息缺失会返回 `None`，调用方会跳过该文件。
-    fn strm_content(&self, path: &AlistPath) -> Option<String> {
-        // 三种模式对应 Python 版本：AList 下载链接、后端原始链接、AList 路径。
-        match self.config.mode {
-            Mode::AlistURL => Some(path.download_url()),
-            Mode::RawURL => path.raw_url.clone(),
-            Mode::AlistPath => Some(path.full_path.clone()),
-        }
-    }
-
     /// 下载远端伴生文件到本地路径。
     ///
     /// 下载会使用独立信号量限流，避免字幕、图片、nfo 等伴生文件批量同步时
     /// 占满连接；只有 HTTP 200 会被视为成功，其它状态会作为下载错误返回。
+    /// 内容先写入同目录的 `.part` 临时文件，完整下载成功后才改名，避免网络
+    /// 中断留下半截文件被当成有效字幕。
     async fn download_file(
         &self,
         context: &RunContext,
@@ -475,11 +549,24 @@ impl Alist2Strm {
                 url: url.to_string(),
             });
         }
+        if let Some(length) = response.content_length() {
+            if length > MAX_ATTACHMENT_BYTES {
+                return Err(Error::DownloadTooLarge {
+                    size: length,
+                    limit: MAX_ATTACHMENT_BYTES,
+                    url: url.to_string(),
+                });
+            }
+        }
 
-        let mut file = fs::File::create(local_path).await?;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
+        let temp_path = temp_file_path(local_path);
+        if let Err(err) = stream_to_file(response, &temp_path, url).await {
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(err);
+        }
+        if let Err(err) = fs::rename(&temp_path, local_path).await {
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(err.into());
         }
         Ok(())
     }
@@ -487,64 +574,74 @@ impl Alist2Strm {
     /// 清理本地已经不在远端扫描结果中的文件。
     ///
     /// 函数会收集目标目录里的本地文件，与本次扫描确认存在的路径做差集；
-    /// 启用智能保护时，大量 `.strm` 删除会先进入宽限确认。删除文件后会尝试
-    /// 清理空父目录，保持目标目录整洁。
+    /// `excluded_prefixes` 内的子树（远端扫描失败的目录）不参与删除。启用
+    /// 智能保护时，大批量删除会先进入宽限确认。删除文件后会尝试清理空父目录，
+    /// 单个文件失败不会中断整轮清理。
     async fn cleanup_local_files(
         &self,
         context: &RunContext,
         processed_local_paths: HashSet<PathBuf>,
+        excluded_prefixes: &[PathBuf],
     ) -> Result<()> {
         // sync.enabled 开启时，本地多出来的文件会被清理；可配合保护防止大规模误删。
         let all_local_files =
             collect_local_files(&self.config.target_dir, self.config.flatten_mode).await?;
         let mut files_to_delete = all_local_files
             .difference(&processed_local_paths)
+            .filter(|path| !excluded_prefixes.iter().any(|prefix| path.starts_with(prefix)))
             .cloned()
             .collect::<HashSet<_>>();
 
+        // 忽略规则先生效，避免被忽略的文件占用保护计数。
+        files_to_delete.retain(|path| {
+            let ignored = context.sync_ignore_pattern.as_ref().is_some_and(|regex| {
+                regex.is_match(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(""),
+                )
+            });
+            if ignored {
+                RunStats::inc(&context.stats.local_delete_ignored_count);
+            }
+            !ignored
+        });
+
         if let Some(protection_config) = self.sync_smart_protection() {
-            let strm_to_delete = files_to_delete
-                .iter()
-                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("strm"))
-                .cloned()
-                .collect::<HashSet<_>>();
-            let other_files = files_to_delete
-                .difference(&strm_to_delete)
-                .cloned()
-                .collect::<HashSet<_>>();
-            let strm_present = processed_local_paths
-                .iter()
-                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("strm"))
-                .cloned()
-                .collect::<HashSet<_>>();
             let mut protection = ProtectionManager::new(
                 self.config.target_dir.clone(),
                 &self.config.id,
                 protection_config,
             )
             .await?;
-            let ready_strm = protection.process(strm_to_delete, &strm_present).await?;
-            files_to_delete = other_files.union(&ready_strm).cloned().collect();
+            files_to_delete = protection
+                .process(files_to_delete, &processed_local_paths)
+                .await?;
         }
 
         for file_path in files_to_delete {
-            if context.sync_ignore_pattern.as_ref().is_some_and(|regex| {
-                regex.is_match(
-                    file_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(""),
-                )
-            }) {
-                RunStats::inc(&context.stats.local_delete_ignored_count);
-                continue;
+            match fs::try_exists(&file_path).await {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    warn!(path = %file_path.display(), error = %err, "检查本地文件失败，已跳过");
+                    continue;
+                }
             }
 
-            if fs::try_exists(&file_path).await? {
-                fs::remove_file(&file_path).await?;
-                RunStats::inc(&context.stats.local_deleted_count);
-                info!(path = %file_path.display(), "删除本地过期文件");
-                remove_empty_parents(file_path.parent(), &self.config.target_dir).await?;
+            match fs::remove_file(&file_path).await {
+                Ok(()) => {
+                    RunStats::inc(&context.stats.local_deleted_count);
+                    info!(path = %file_path.display(), "删除本地过期文件");
+                    if let Err(err) =
+                        remove_empty_parents(file_path.parent(), &self.config.target_dir).await
+                    {
+                        warn!(path = %file_path.display(), error = %err, "清理空目录失败");
+                    }
+                }
+                Err(err) => {
+                    warn!(path = %file_path.display(), error = %err, "删除本地过期文件失败，已跳过");
+                }
             }
         }
 
@@ -555,26 +652,31 @@ impl Alist2Strm {
     ///
     /// 同一个 BDMV 根目录下会选择体积最大的 `.m2ts` 作为主片，最终只生成一个
     /// 电影标题 `.strm`，避免媒体库识别到多个分段文件。
-    fn finalize_bdmv_paths(&self, collections: HashMap<String, Vec<AlistPath>>) -> Vec<AlistPath> {
+    fn finalize_bdmv_paths(
+        &self,
+        collections: HashMap<String, Vec<(String, ObjResp)>>,
+    ) -> Vec<(String, ObjResp)> {
         collections
             .into_values()
-            .filter_map(|paths| {
-                let selected = paths.into_iter().max_by_key(|path| path.size);
-                if let Some(path) = selected.as_ref() {
-                    info!(path = %path.full_path, size = path.size, "选择 BDMV 最大 m2ts 作为主片");
+            .filter_map(|files| {
+                let selected = files.into_iter().max_by_key(|(_, object)| object.size);
+                if let Some((full_path, object)) = selected.as_ref() {
+                    info!(path = %full_path, size = object.size, "选择 BDMV 最大 m2ts 作为主片");
                 }
                 selected
             })
             .collect()
     }
 
-    /// 计算远端路径对应的本地输出路径。
+    /// 计算远端文件对应的本地输出路径。
     ///
     /// 该函数把任务级别的 `source_dir`、`target_dir`、`flatten_mode` 和 BDMV
-    /// 特殊规则传给路径模型，得到最终要写入或下载的本地文件位置。
-    fn local_path(&self, path: &AlistPath) -> PathBuf {
-        let bdmv_root = is_bdmv_file(path).then(|| bdmv_root(path)).flatten();
-        path.local_path(
+    /// 特殊规则传给路径规则，得到最终要写入或下载的本地文件位置。
+    fn local_path(&self, full_path: &str, name: &str) -> PathBuf {
+        let bdmv_root = is_bdmv_file(full_path, name).then(|| bdmv_root(full_path)).flatten();
+        path::local_path(
+            full_path,
+            name,
             &self.config.source_dir,
             &self.config.target_dir,
             self.config.flatten_mode,
@@ -621,8 +723,8 @@ impl Alist2Strm {
 
     /// 返回启用状态下的智能删除保护配置。
     ///
-    /// 该配置只作用于 `.strm` 的大规模删除场景，用于防止远端扫描失败导致本地
-    /// 媒体库被误清空。
+    /// 该配置用于防止远端扫描失败导致本地媒体库被误清空；保护范围覆盖全部
+    /// 同步产生的文件，而不只是 `.strm`。
     fn sync_smart_protection(&self) -> Option<&SmartProtectionConfig> {
         self.config
             .sync
@@ -630,6 +732,39 @@ impl Alist2Strm {
             .and_then(|sync| sync.smart_protection.as_ref())
             .filter(|config| config.enabled)
     }
+}
+
+/// 生成写入过程中使用的临时文件路径（下载与 `.strm` 写入共用）。
+fn temp_file_path(local_path: &Path) -> PathBuf {
+    match (local_path.parent(), local_path.file_name()) {
+        (Some(parent), Some(name)) => {
+            let mut name = name.to_os_string();
+            name.push(".part");
+            parent.join(name)
+        }
+        _ => local_path.with_extension("part"),
+    }
+}
+
+/// 把响应体流式写入临时文件，超过体积上限立即中止。
+async fn stream_to_file(response: reqwest::Response, path: &Path, url: &str) -> Result<()> {
+    let mut file = fs::File::create(path).await?;
+    let mut written = 0u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        written += chunk.len() as u64;
+        if written > MAX_ATTACHMENT_BYTES {
+            return Err(Error::DownloadTooLarge {
+                size: written,
+                limit: MAX_ATTACHMENT_BYTES,
+                url: url.to_string(),
+            });
+        }
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -644,13 +779,27 @@ mod tests {
             alist: "test-alist".to_string(),
             source_dir: "/source".to_string(),
             target_dir,
-            mode: Mode::AlistURL,
             flatten_mode: true,
             overwrite: true,
             download: Default::default(),
             sync: None,
             concurrency: 1,
         }
+    }
+
+    fn test_object(name: &str) -> ObjResp {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "size": 1,
+            "is_dir": false,
+            "modified": "2024-01-01T00:00:00Z",
+            "created": "2024-01-01T00:00:00Z",
+            "sign": "",
+            "thumb": "",
+            "type": 0,
+            "hashinfo": "",
+        }))
+        .expect("test object should deserialize")
     }
 
     fn test_context() -> RunContext {
@@ -693,21 +842,20 @@ mod tests {
             "http://127.0.0.1:5244".to_string(),
         );
         let context = Arc::new(test_context());
-        let paths = vec![AlistPath {
-            server_url: "http://127.0.0.1:5244".to_string(),
-            base_path: String::new(),
-            full_path: "/source/movie.mkv".to_string(),
-            name: "movie.mkv".to_string(),
-            size: 1,
-            is_dir: false,
-            modified_timestamp: 0,
-            sign: String::new(),
-            raw_url: None,
-        }];
+        let files = vec![("/source/movie.mkv".to_string(), test_object("movie.mkv"))];
 
-        let result = runner.process_paths(context, paths).await;
+        let result = runner.process_paths(context, files).await;
         let _ = fs::remove_file(&target_dir).await;
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn temp_file_path_keeps_original_name() {
+        let local = Path::new("/media/ani/movie.zh.ass");
+        assert_eq!(
+            temp_file_path(local),
+            PathBuf::from("/media/ani/movie.zh.ass.part")
+        );
     }
 }

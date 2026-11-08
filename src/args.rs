@@ -13,13 +13,21 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     pub debug: bool,
 
-    /// 指定配置文件路径
+    /// 指定业务配置文件路径（允许为空：可只保留注释，或完全不存在）
     #[arg(
         long = "config",
         value_name = "PATH",
         default_value = "config/config.yaml"
     )]
     pub config_path: PathBuf,
+
+    /// 指定 Web 面板配置文件路径（与业务配置完全独立，允许为空）
+    #[arg(
+        long = "web-config",
+        value_name = "PATH",
+        default_value = "config/web.yaml"
+    )]
+    pub web_config_path: PathBuf,
 
     /// 指定日志文件目录路径（为空表示禁用日志文件写入）
     #[arg(long = "log", value_name = "PATH", default_value = "logs")]

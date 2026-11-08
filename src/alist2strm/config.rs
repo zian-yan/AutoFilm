@@ -18,42 +18,6 @@ pub struct DownloadOption {
     pub concurrency: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
-pub enum Mode {
-    #[default]
-    AlistURL,
-    RawURL,
-    AlistPath,
-}
-
-impl<'de> Deserialize<'de> for Mode {
-    /// 从配置文件中的字符串解析 `.strm` 内容模式。
-    ///
-    /// 这里保持 Python 版本的宽松行为：未知值不会报错，而是回退到
-    /// `AlistURL`，避免配置拼写问题导致整个任务无法启动。
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Ok(Self::from_str(&value))
-    }
-}
-
-impl Mode {
-    /// 将用户配置的模式字符串转换为内部枚举。
-    ///
-    /// 支持大小写不敏感的 `RawURL`、`AlistPath` 和默认 `AlistURL`。
-    /// 未识别的值会返回 `AlistURL`，保持与 Python 版本一致的容错效果。
-    pub fn from_str(value: &str) -> Self {
-        match value.to_ascii_lowercase().as_str() {
-            "rawurl" => Self::RawURL,
-            "alistpath" => Self::AlistPath,
-            _ => Self::AlistURL,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SmartProtectionConfig {
     #[serde(default)]
@@ -85,8 +49,6 @@ pub struct Config {
     pub source_dir: String,
     pub target_dir: PathBuf,
     #[serde(default)]
-    pub mode: Mode,
-    #[serde(default)]
     pub flatten_mode: bool,
     #[serde(default)]
     pub overwrite: bool,
@@ -100,7 +62,7 @@ pub struct Config {
 
 /// 返回默认的普通文件处理并发数。
 ///
-/// 该值限制同时生成 `.strm`、获取 RawURL 和处理本地文件的任务数量，
+/// 该值限制同时生成 `.strm` 和处理本地文件的任务数量，
 /// 防止一次扫描中创建过多并发操作。
 fn default_concurrency() -> usize {
     50
@@ -202,17 +164,5 @@ fn normalize_ext(value: &str) -> String {
         value
     } else {
         format!(".{value}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_mode_case_insensitively() {
-        assert_eq!(Mode::from_str("rawurl"), Mode::RawURL);
-        assert_eq!(Mode::from_str("AlistPath"), Mode::AlistPath);
-        assert_eq!(Mode::from_str("unknown"), Mode::AlistURL);
     }
 }

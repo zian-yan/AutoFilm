@@ -19,6 +19,9 @@ pub enum Error {
         body: String,
     },
 
+    #[error("媒体图片体积超过上限（{size} > {limit} 字节）")]
+    ImageTooLarge { size: u64, limit: u64 },
+
     #[error("媒体服务器未返回可用用户")]
     MissingUser,
 }

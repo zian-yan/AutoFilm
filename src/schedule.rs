@@ -48,11 +48,20 @@ pub async fn create_scheduler(
         );
 
         let runner = Arc::new(Alist2Strm::new(task, client.clone(), server_url.clone()));
+        let guard = utils::shared_guard(&format!("alist2strm:{task_id}"));
         scheduler
             .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
                 let runner = runner.clone();
                 let task_id = task_id.clone();
+                let guard = guard.clone();
                 Box::pin(async move {
+                    let Some(_slot) = guard.try_acquire() else {
+                        warn!(
+                            task_id = %task_id,
+                            "上一次 Alist2Strm 任务仍在运行，跳过本次调度"
+                        );
+                        return;
+                    };
                     info!(task_id = %task_id, "开始执行 Alist2Strm 任务");
                     match runner.run().await {
                         Err(err) => {
@@ -125,11 +134,20 @@ pub async fn create_scheduler(
         );
 
         let runner = Arc::new(Ani2Alist::new(task, client.clone(), tz));
+        let guard = utils::shared_guard(&format!("ani2alist:{task_id}"));
         scheduler
             .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
                 let runner = runner.clone();
                 let task_id = task_id.clone();
+                let guard = guard.clone();
                 Box::pin(async move {
+                    let Some(_slot) = guard.try_acquire() else {
+                        warn!(
+                            task_id = %task_id,
+                            "上一次 Ani2Alist 任务仍在运行，跳过本次调度"
+                        );
+                        return;
+                    };
                     info!(task_id = %task_id, "开始执行 Ani2Alist 任务");
                     match runner.run().await {
                         Err(err) => {
@@ -180,11 +198,20 @@ pub async fn create_scheduler(
         };
 
         info!(task_id = %task_id, cron = %cron, "添加 LibraryPoster 定时任务");
+        let guard = utils::shared_guard(&format!("library_poster:{task_id}"));
         scheduler
             .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
                 let runner = runner.clone();
                 let task_id = task_id.clone();
+                let guard = guard.clone();
                 Box::pin(async move {
+                    let Some(_slot) = guard.try_acquire() else {
+                        warn!(
+                            task_id = %task_id,
+                            "上一次 LibraryPoster 任务仍在运行，跳过本次调度"
+                        );
+                        return;
+                    };
                     info!(task_id = %task_id, "开始执行 LibraryPoster 任务");
                     match runner.run().await {
                         Ok(summary) => {
