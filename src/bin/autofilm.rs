@@ -16,6 +16,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tz = args.app_timezone();
 
     let _logging_guard = logging::init(args.log_level(), &args.log_path, tz, args.colorful_log)?;
+    // 任务日志独立于按天文件（即使 --log 留空也要能用），放在 logs/task-logs/。
+    let task_log_root = if args.log_path.is_empty() {
+        std::path::PathBuf::from("logs")
+    } else {
+        std::path::PathBuf::from(&args.log_path)
+    };
+    match std::path::absolute(task_log_root.join("task-logs")) {
+        Ok(root) => {
+            if let Err(err) = autofilm::task_log::init(root, tz) {
+                warn!(error = %err, "任务日志目录初始化失败，日志按钮可能不可用");
+            }
+        }
+        Err(err) => warn!(error = %err, "无法解析任务日志目录，日志按钮可能不可用"),
+    }
     debug!(
         debug = args.debug,
         config_path = %args.config_path.display(),

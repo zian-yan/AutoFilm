@@ -9,6 +9,8 @@ use tracing_subscriber::{
     Layer, fmt::time::FormatTime, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
+use crate::task_log::TaskLogLayer;
+
 /// 自定义一个结构体，用来存放 chrono_tz 的时区
 #[derive(Debug, Clone)]
 struct ChronoTzTimer {
@@ -61,7 +63,11 @@ pub fn init(
         .with_ansi(colorful_log)
         .with_filter(level_filter);
 
-    let subscriber = subscriber.with(console_layer);
+    // 任务级日志与控制台/按天文件并行采集：只有带任务 span 的事件才会落到
+    // 对应任务的日志文件里，其余事件不受影响。
+    let subscriber = subscriber
+        .with(console_layer)
+        .with(TaskLogLayer.with_filter(level_filter));
 
     if log_path.is_empty() {
         subscriber.init();

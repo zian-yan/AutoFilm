@@ -4,8 +4,9 @@
 //! 保存路径。面板保存业务配置不会重写本文件，反之亦然，因此不存在「谁覆盖谁」
 //! 的问题。
 //!
-//! 该配置属于服务级设置（监听地址、认证、是否监听文件改动），几乎都需要重启
-//! 进程才能生效，所以保存后只提示「重启生效」，不参与调度器热重载。
+//! 该配置属于服务级设置（监听地址、认证、是否监听文件改动），但与业务配置
+//! 一样全部实时生效：认证信息由请求链路动态读取，监听地址热重绑，开关即时
+//! 启停，保存后无需重启进程。
 //!
 //! 与业务配置一样，本文件允许为空：文件不存在或内容为空时使用内置默认值
 //! （不启用面板、监听 `127.0.0.1:8080`、无认证、启用文件监听）。
@@ -148,28 +149,33 @@ impl WebConfig {
         issues
     }
 
-    /// 列出本次改动中需要重启才能生效的项。
+    /// 列出本次改动中值得提示用户的「已实时生效」事项。
     ///
-    /// 面板配置全部属于服务级设置，没有可以热更新的字段，因此这里只负责把
-    /// 「改了哪几项」说清楚，让前端给出明确提示。
-    pub fn restart_reasons(&self, next: &WebConfig) -> Vec<String> {
-        let mut reasons = Vec::new();
+    /// 尤其是监听地址：切换成功后浏览器需要改用新地址才能继续访问面板。
+    pub fn realtime_notes(&self, next: &WebConfig) -> Vec<String> {
+        let mut notes = Vec::new();
         if self.enable != next.enable {
-            reasons.push(format!(
-                "web.enable 已改为 {}，重启后生效",
-                if next.enable { "true" } else { "false" }
+            notes.push(format!(
+                "Web 面板已{}，立即生效",
+                if next.enable { "启用" } else { "关闭" }
             ));
         }
         if self.listen != next.listen {
-            reasons.push(format!("面板监听地址已改为 {}，重启后生效", next.listen));
+            notes.push(format!(
+                "面板监听地址已切换为 {}，请改用新地址访问",
+                next.listen
+            ));
         }
         if self.username != next.username || self.password != next.password {
-            reasons.push("面板认证信息已保存，重启后生效".to_string());
+            notes.push("面板认证信息已立即生效，所有登录会话需重新登录".to_string());
         }
         if self.watch_file != next.watch_file {
-            reasons.push("配置文件监听开关已保存，重启后生效".to_string());
+            notes.push(format!(
+                "配置文件监听已{}，立即生效",
+                if next.watch_file { "开启" } else { "关闭" }
+            ));
         }
-        reasons
+        notes
     }
 
     /// 返回脱敏后的副本，用于回传前端与导出 YAML。
@@ -303,16 +309,17 @@ mod tests {
     }
 
     #[test]
-    fn restart_reasons_list_changed_fields() {
+    fn realtime_notes_list_changed_fields() {
         let before = WebConfig::default();
         let after = WebConfig {
             enable: true,
             listen: "0.0.0.0:8080".to_string(),
             ..before.clone()
         };
-        let reasons = before.restart_reasons(&after);
-        assert_eq!(reasons.len(), 2, "应当只报告改动过的两项: {reasons:?}");
-        assert!(before.restart_reasons(&before).is_empty());
+        let notes = before.realtime_notes(&after);
+        assert_eq!(notes.len(), 2, "应当只报告改动过的两项: {notes:?}");
+        assert!(notes.iter().all(|note| !note.contains("重启")));
+        assert!(before.realtime_notes(&before).is_empty());
     }
 
     #[test]

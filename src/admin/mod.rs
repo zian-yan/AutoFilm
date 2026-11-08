@@ -5,9 +5,10 @@
 //! 2. 配置热重载内核：校验 → 写盘 → 重建调度器 → 切换，失败时保持旧配置继续运行；
 //! 3. 配置文件监听线程，手工编辑 YAML 后同样可以即时生效。
 //!
-//! 配置分为两条完全独立的通道：
-//! - 业务配置（`config.yaml`）：参与调度器热重载，保存后立即重建全部 cron 任务；
-//! - 面板配置（`web.yaml`）：服务级设置，保存后只提示「重启生效」，不触碰调度器。
+//! 两份配置都**实时生效**，没有任何字段需要重启进程：
+//! - 业务配置（`config.yaml`）：重建调度器，运行中任务持有旧快照继续跑完；
+//! - 面板配置（`web.yaml`）：认证信息动态读取，监听地址热重绑，`enable` 与
+//!   `watch_file` 动态启停，全部在保存的同一事务里完成。
 //!
 //! 两条通道各有独立的 [`ConfigStore`] / [`WebStore`]、独立的版本号与独立的写盘
 //! 路径，因此面板保存业务配置不会重写 `web.yaml`，反之亦然。
@@ -18,6 +19,7 @@
 mod assets;
 pub mod auth;
 mod http;
+mod lock;
 mod router;
 mod schema;
 mod server;
@@ -61,7 +63,7 @@ pub enum ReloadSource {
     Panel,
     /// 配置文件被外部修改。
     File,
-    /// 手工点击「重新加载文件」。
+    /// 通过 `POST /api/reload` 手工重读文件（供自动化脚本使用）。
     Manual,
 }
 
@@ -88,6 +90,8 @@ impl ReloadSource {
 pub enum ApplyOutcome {
     Applied(ApplyReport),
     Rejected(Vec<ValidationIssue>),
+    /// 本次提交改动了正在运行的任务配置，整次拒绝（任务键列表）。
+    Locked(Vec<String>),
     Failed(String),
 }
 
@@ -101,6 +105,8 @@ pub struct ApplyReport {
     /// 本次保存作用于哪份配置：`business` 或 `web`。
     pub scope: &'static str,
     pub warnings: Vec<String>,
+    /// 因正在运行而被保护（保留旧配置）的任务键。
+    pub locked_tasks: Vec<String>,
 }
 
 /// 面板展示的运行时状态。
@@ -119,7 +125,8 @@ pub struct AdminContext {
     pub store: Arc<ConfigStore>,
     /// 面板配置存储（`web.yaml`）。
     pub web_store: Arc<WebStore>,
-    pub auth: AuthConfig,
+    /// 当前面板监听句柄；保存 `web.yaml` 时按新配置热重绑。
+    pub web: Mutex<Option<WebHandle>>,
     pub guard: auth::LoginGuard,
     /// 登录页签发/校验的会话表（仅存内存，重启即失效）。
     pub sessions: auth::SessionStore,
@@ -136,15 +143,30 @@ pub struct AdminContext {
     pub handle: tokio::runtime::Handle,
     pub config_path: PathBuf,
     pub web_config_path: PathBuf,
-    /// 启动时实际生效的监听地址（面板配置改动后需重启才会变化）。
-    pub listen: String,
-    /// 启动时实际生效的文件监听开关。
-    pub watch_file: bool,
     pub timezone: String,
     pub started_at: String,
 }
 
 impl AdminContext {
+    /// 当前生效的面板配置。所有服务级设置都从这里实时读取，不再缓存启动快照。
+    pub fn web_config(&self) -> WebConfig {
+        self.web_store.snapshot().config
+    }
+
+    /// 当前生效的认证凭据。用户名/密码改动后立即生效。
+    pub fn auth(&self) -> AuthConfig {
+        let web = self.web_config();
+        AuthConfig::new(web.username, web.password)
+    }
+
+    /// 面板当前是否正在提供 HTTP 服务。
+    pub fn web_enabled(&self) -> bool {
+        self.web
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .is_some()
+    }
+
     /// 以 JSON 形式返回运行时状态。
     pub fn status_json(&self) -> serde_json::Value {
         // 锁中毒时继续使用内部数据，避免面板因为一次 panic 永久不可用。
@@ -234,7 +256,6 @@ pub enum AdminCommand {
 /// 管理面板与热重载内核的生命周期句柄。
 pub struct Runtime {
     pub ctx: Arc<AdminContext>,
-    web: Option<WebHandle>,
     watcher: Option<WatcherHandle>,
     supervisor: Option<tokio::task::JoinHandle<()>>,
 }
@@ -268,7 +289,7 @@ impl Runtime {
         let ctx = Arc::new(AdminContext {
             store,
             web_store,
-            auth: AuthConfig::new(web_config.username.clone(), web_config.password.clone()),
+            web: Mutex::new(None),
             guard: auth::LoginGuard::default(),
             sessions: auth::SessionStore::new(),
             schema: schema::schema(),
@@ -283,14 +304,12 @@ impl Runtime {
             handle: tokio::runtime::Handle::current(),
             config_path,
             web_config_path,
-            listen: web_config.listen.clone(),
-            watch_file: web_config.watch_file,
             timezone: tz.to_string(),
             started_at: now_rfc3339(),
         });
 
         // 面板先绑定端口：监听失败时直接终止启动，避免留下无人接管的调度器。
-        let web = if web_config.enable {
+        if web_config.enable {
             match server::start(ctx.clone()) {
                 Ok(handle) => {
                     info!(
@@ -298,7 +317,7 @@ impl Runtime {
                         auth = !web_config.password.is_empty(),
                         "Web 管理面板已启动"
                     );
-                    Some(handle)
+                    *ctx.web.lock().unwrap_or_else(|err| err.into_inner()) = Some(handle);
                 }
                 Err(err) => {
                     let _ = scheduler.shutdown().await;
@@ -307,28 +326,25 @@ impl Runtime {
             }
         } else {
             info!("Web 管理面板未启用（web.enable = false）");
-            None
-        };
+        }
 
         let supervisor = tokio::spawn(supervise(ctx.clone(), command_rx, Some(scheduler), tz));
 
-        let mut runtime = Self {
+        // 监听线程常驻，由 watch_loop 每轮读取实时 watch_file 决定是否检测，
+        // 这样开关本身也能即时生效，不必重启线程。
+        let watcher_ctx = ctx.clone();
+        let runtime = Self {
             ctx,
-            web,
-            watcher: None,
+            watcher: Some(spawn_watcher(watcher_ctx)),
             supervisor: Some(supervisor),
         };
-
-        if web_config.watch_file {
-            runtime.watcher = Some(spawn_watcher(runtime.ctx.clone()));
-        }
 
         Ok((runtime, scheduled_count))
     }
 
     /// 是否启用了 Web 面板。
     pub fn web_enabled(&self) -> bool {
-        self.web.is_some()
+        self.ctx.web_enabled()
     }
 
     /// 停止面板、监听线程与调度器。
@@ -336,8 +352,14 @@ impl Runtime {
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
         }
-        if let Some(mut web) = self.web.take() {
-            web.stop();
+        let web = self
+            .ctx
+            .web
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .take();
+        if let Some(mut handle) = web {
+            handle.stop();
         }
 
         let (reply, receiver) = oneshot::channel();
@@ -408,6 +430,42 @@ async fn apply(
 ) -> ApplyOutcome {
     let started = Instant::now();
 
+    // 运行中任务的配置保护：面板提交整次拒绝，外部编辑只回滚被锁的那条任务，
+    // 其余改动照常生效。只比较任务条目，全局策略与客户端配置不受限制。
+    let running = schedule::running_tasks();
+    let current_value = serde_json::to_value(&ctx.store.snapshot().config);
+    let next_value = serde_json::to_value(&config);
+    let mut locked_tasks = Vec::new();
+    let config = if running.is_empty() {
+        config
+    } else {
+        match (current_value, next_value) {
+            (Ok(current), Ok(next)) if source == ReloadSource::Panel => {
+                let changed = lock::changed_locked(&current, &next, &running);
+                if !changed.is_empty() {
+                    warn!(tasks = ?changed, "提交改动了运行中任务的配置，已拒绝");
+                    return ApplyOutcome::Locked(changed);
+                }
+                config
+            }
+            (Ok(current), Ok(mut next)) => {
+                locked_tasks = lock::preserve_locked(&current, &mut next, &running);
+                match serde_json::from_value::<Config>(next) {
+                    Ok(restored) => restored,
+                    Err(err) => {
+                        let message = format!("恢复运行中任务配置失败: {err}");
+                        record_failure(ctx, message.clone(), source);
+                        return ApplyOutcome::Failed(message);
+                    }
+                }
+            }
+            _ => {
+                warn!("配置序列化失败，本次跳过运行中任务保护");
+                config
+            }
+        }
+    };
+
     let issues = config.validate();
     if !issues.is_empty() {
         let message = format!("配置校验未通过（{} 处问题）", issues.len());
@@ -470,13 +528,22 @@ async fn apply(
         *clients = alist_clients_next;
     }
 
+    let warnings = if locked_tasks.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "任务 {} 正在运行，其配置已保留为运行开始时的值；请等任务结束后再修改",
+            locked_tasks.join("、")
+        )]
+    };
     let report = ApplyReport {
         version,
         scheduled_count,
         duration_ms: started.elapsed().as_millis() as u64,
         source: source.as_str().to_string(),
         scope: "business",
-        warnings: Vec::new(),
+        warnings,
+        locked_tasks,
     };
 
     {
@@ -499,11 +566,25 @@ async fn apply(
     ApplyOutcome::Applied(report)
 }
 
-/// 应用一份新的面板配置。
+/// 面板监听的切换计划。
+enum ServicePlan {
+    /// 地址未变，服务保持不动（认证等字段由请求链路动态读取）。
+    Keep,
+    /// 关闭面板。
+    Stop,
+    /// 用已预绑定的监听器重绑到新地址。
+    Switch {
+        listener: std::net::TcpListener,
+        listen: String,
+    },
+}
+
+/// 应用一份新的面板配置：校验 → 预绑定 → 切换监听 → 写盘 → 收尾。
 ///
-/// 只写 `web.yaml`：不重建调度器、不推进业务配置的版本号。面板配置全部是
-/// 服务级设置，保存后仍需重启进程才会生效，因此把改动项作为警告回传前端。
-fn apply_web(ctx: &AdminContext, web: WebConfig, source: ReloadSource) -> ApplyOutcome {
+/// 所有字段都实时生效，无需重启进程。预绑定放在写盘之前，新地址不可用就整次
+/// 回滚、旧监听保持可用；写盘失败同样把监听现场恢复回去。认证信息由请求链路
+/// 动态读取，改密码时顺带清空旧会话。
+fn apply_web(ctx: &Arc<AdminContext>, web: WebConfig, source: ReloadSource) -> ApplyOutcome {
     let started = Instant::now();
 
     let issues = web.validate();
@@ -513,22 +594,99 @@ fn apply_web(ctx: &AdminContext, web: WebConfig, source: ReloadSource) -> ApplyO
         return ApplyOutcome::Rejected(issues);
     }
 
-    let previous = ctx.web_store.snapshot();
-    let warnings = previous.config.restart_reasons(&web);
+    let previous = ctx.web_config();
+    let notes = previous.realtime_notes(&web);
 
-    let version = if source == ReloadSource::Panel {
-        match ctx.web_store.apply(web) {
-            Ok(version) => version,
-            Err(err) => {
-                let message = format!("写入面板配置文件失败: {err}");
-                record_failure(ctx, message.clone(), source);
-                return ApplyOutcome::Failed(message);
+    let plan = if web.enable {
+        let current = ctx
+            .web
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            .map(|handle| handle.listen.clone());
+        if current.as_deref() == Some(web.listen.as_str()) {
+            ServicePlan::Keep
+        } else {
+            match server::bind(&web.listen, !web.password.is_empty()) {
+                Ok(listener) => ServicePlan::Switch {
+                    listener,
+                    listen: web.listen.clone(),
+                },
+                Err(err) => {
+                    let message = format!("切换面板监听失败: {err}");
+                    record_failure(ctx, message.clone(), source);
+                    return ApplyOutcome::Failed(message);
+                }
             }
         }
+    } else if ctx.web_enabled() {
+        ServicePlan::Stop
+    } else {
+        ServicePlan::Keep
+    };
+
+    let service_changed = !matches!(plan, ServicePlan::Keep);
+    // 新监听就绪后才撤掉旧的，面板不会出现空窗；失败的分支不写盘。
+    let previous_handle = {
+        let mut slot = ctx.web.lock().unwrap_or_else(|err| err.into_inner());
+        match plan {
+            ServicePlan::Keep => None,
+            ServicePlan::Stop => slot.take(),
+            ServicePlan::Switch { listener, listen } => {
+                match server::serve(ctx.clone(), listener, listen.clone()) {
+                    Ok(handle) => {
+                        let old = slot.replace(handle);
+                        info!(listen = %listen, "Web 管理面板监听地址已热切换");
+                        old
+                    }
+                    Err(err) => {
+                        let message = format!("启动新的面板监听失败: {err}");
+                        record_failure(ctx, message.clone(), source);
+                        return ApplyOutcome::Failed(message);
+                    }
+                }
+            }
+        }
+    };
+
+    let saved = if source == ReloadSource::Panel {
+        ctx.web_store
+            .apply(web.clone())
+            .map_err(|err| format!("写入面板配置文件失败: {err}"))
     } else {
         // 外部编辑 / 手工重载：文件已是最新内容，不再回写。
-        ctx.web_store.adopt(web)
+        Ok(ctx.web_store.adopt(web.clone()))
     };
+
+    let version = match saved {
+        Ok(version) => version,
+        Err(message) => {
+            // 写盘失败：把监听恢复成切换前的状态，避免磁盘与运行态不一致。
+            if service_changed {
+                let abandoned = {
+                    let mut slot = ctx.web.lock().unwrap_or_else(|err| err.into_inner());
+                    let current = slot.take();
+                    *slot = previous_handle;
+                    current
+                };
+                if let Some(mut handle) = abandoned {
+                    handle.stop();
+                }
+            }
+            record_failure(ctx, message.clone(), source);
+            return ApplyOutcome::Failed(message);
+        }
+    };
+
+    // 旧监听的连接线程不受影响：当前保存请求仍能正常把响应写回浏览器。
+    if let Some(mut handle) = previous_handle {
+        handle.stop();
+    }
+
+    if previous.username != web.username || previous.password != web.password {
+        ctx.sessions.clear();
+        info!("面板认证信息已实时更新，旧登录会话全部失效");
+    }
 
     let report = ApplyReport {
         version,
@@ -536,17 +694,18 @@ fn apply_web(ctx: &AdminContext, web: WebConfig, source: ReloadSource) -> ApplyO
         duration_ms: started.elapsed().as_millis() as u64,
         source: source.as_str().to_string(),
         scope: "web",
-        warnings,
+        warnings: notes,
+        locked_tasks: Vec::new(),
     };
 
     info!(
         version,
         source = source.as_str(),
         duration_ms = report.duration_ms,
-        "面板配置已保存（重启后生效）"
+        "面板配置已保存并实时生效"
     );
-    for warning in &report.warnings {
-        warn!("{warning}");
+    for note in &report.warnings {
+        info!("{note}");
     }
 
     ApplyOutcome::Applied(report)
@@ -569,10 +728,10 @@ struct WatcherHandle {
 
 impl WatcherHandle {
     fn stop(&mut self) {
+        // 只置标志、不 join：监听线程可能正在等待热重载内核回包，join 会与内核
+        // 互相等待直到超时。线程最多一个轮询周期后自行退出。
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.thread.take();
     }
 }
 
@@ -596,13 +755,18 @@ fn watch_loop(ctx: Arc<AdminContext>, stop: Arc<AtomicBool>) {
         business = %ctx.config_path.display(),
         web = %ctx.web_config_path.display(),
         interval_secs = WATCH_INTERVAL.as_secs(),
-        "已启用配置文件变更监听"
+        "已启动配置文件变更监听（按 web.watch_file 实时开关）"
     );
 
     'watch: while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(WATCH_INTERVAL);
         if stop.load(Ordering::Relaxed) {
             break;
+        }
+
+        // watch_file 本身也是实时配置：每轮重新读取，开关改动即时生效。
+        if !ctx.web_config().watch_file {
+            continue;
         }
 
         if ctx.store.config_changed_on_disk() {
@@ -633,6 +797,9 @@ fn watch_loop(ctx: Arc<AdminContext>, stop: Arc<AtomicBool>) {
                         ),
                         Ok(ApplyOutcome::Failed(message)) => {
                             warn!(error = %message, "业务配置应用失败，已保留当前运行配置");
+                        }
+                        Ok(ApplyOutcome::Locked(tasks)) => {
+                            warn!(tasks = ?tasks, "业务配置改动了运行中任务，已保留当前运行配置");
                         }
                         Err(std_mpsc::RecvTimeoutError::Timeout) => {
                             warn!("等待业务配置热重载结果超时，已放弃本次等待");
@@ -672,7 +839,7 @@ fn watch_loop(ctx: Arc<AdminContext>, stop: Arc<AtomicBool>) {
                     match receiver.recv_timeout(APPLY_TIMEOUT) {
                         Ok(ApplyOutcome::Applied(_)) => info!(
                             path = %ctx.web_config_path.display(),
-                            "面板配置文件改动已载入，重启后生效"
+                            "面板配置文件改动已载入并实时生效"
                         ),
                         Ok(ApplyOutcome::Rejected(issues)) => warn!(
                             count = issues.len(),
@@ -680,6 +847,9 @@ fn watch_loop(ctx: Arc<AdminContext>, stop: Arc<AtomicBool>) {
                         ),
                         Ok(ApplyOutcome::Failed(message)) => {
                             warn!(error = %message, "面板配置保存失败，已保留当前运行配置");
+                        }
+                        Ok(ApplyOutcome::Locked(tasks)) => {
+                            warn!(tasks = ?tasks, "面板配置改动被锁定，已保留当前运行配置");
                         }
                         Err(std_mpsc::RecvTimeoutError::Timeout) => {
                             warn!("等待面板配置保存结果超时，已放弃本次等待");
@@ -703,4 +873,88 @@ fn watch_loop(ctx: Arc<AdminContext>, stop: Arc<AtomicBool>) {
 /// 返回当前本地时间（秒级 RFC3339），用于面板展示。
 fn now_rfc3339() -> String {
     Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+    use crate::schedule::utils::shared_guard;
+
+    const YAML: &str = "\
+alist2strm_tasks:
+  - id: 动漫
+    cron: 0 0 20 * * *
+    alist: a
+    source_dir: /ani
+    target_dir: /media/ani
+  - id: 电影
+    cron: 0 0 21 * * *
+    alist: a
+    source_dir: /movie
+    target_dir: /media/movie
+";
+
+    fn test_context(dir: &std::path::Path, config: Config) -> Arc<AdminContext> {
+        let (tx, _rx) = mpsc::channel(1);
+        Arc::new(AdminContext {
+            store: Arc::new(ConfigStore::new(dir.join("config.yaml"), config)),
+            web_store: Arc::new(WebStore::new(dir.join("web.yaml"), WebConfig::default())),
+            web: Mutex::new(None),
+            guard: auth::LoginGuard::default(),
+            sessions: auth::SessionStore::new(),
+            schema: serde_json::Value::Null,
+            commands: tx,
+            status: Mutex::new(RuntimeStatus::default()),
+            runners: Mutex::new(schedule::RunRegistry::default()),
+            alist_clients: Mutex::new(HashMap::new()),
+            tz: chrono_tz::UTC,
+            handle: tokio::runtime::Handle::current(),
+            config_path: dir.join("config.yaml"),
+            web_config_path: dir.join("web.yaml"),
+            timezone: "UTC".to_string(),
+            started_at: String::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn panel_save_is_rejected_when_a_running_task_changed() {
+        let dir = std::env::temp_dir().join(format!(
+            "autofilm-apply-lock-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let current = Config::from_yaml(YAML).unwrap();
+        let ctx = test_context(&dir, current.clone());
+
+        let key = format!("{}:动漫", schedule::MODULE_ALIST2STRM);
+        let slot = shared_guard(&key).try_acquire().expect("占用任务执行权");
+
+        let mut next = current.clone();
+        next.alist2strm_tasks[0].source_dir = "/changed".to_string();
+        let outcome = apply(&ctx, &mut None, chrono_tz::UTC, next, ReloadSource::Panel).await;
+
+        match outcome {
+            ApplyOutcome::Locked(tasks) => assert_eq!(tasks, vec![key]),
+            other => panic!("改动运行中任务应被拒绝，实际得到: {other:?}"),
+        }
+        assert_eq!(ctx.store.version(), 1, "被拒绝的保存不能推进版本号");
+        assert!(!dir.join("config.yaml").exists(), "被拒绝的保存不能写盘");
+
+        // 任务停止后，同一份改动才允许进入后续流程（校验 / 重建调度器）。
+        drop(slot);
+        let mut next = current.clone();
+        next.alist2strm_tasks[0].source_dir = "/changed".to_string();
+        let outcome = apply(&ctx, &mut None, chrono_tz::UTC, next, ReloadSource::Panel).await;
+        assert!(
+            !matches!(outcome, ApplyOutcome::Locked(_)),
+            "任务结束后不应再被锁定: {outcome:?}"
+        );
+    }
 }

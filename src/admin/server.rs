@@ -18,8 +18,9 @@ const MAX_CONNECTIONS: usize = 32;
 /// 非阻塞 accept 的轮询间隔，同时决定停止响应的最大延迟。
 const ACCEPT_INTERVAL: Duration = Duration::from_millis(80);
 
-/// Web 面板线程句柄。
+/// Web 面板线程句柄；`listen` 记录当前实际绑定的地址，用于判断是否需要重绑。
 pub struct WebHandle {
+    pub listen: String,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -34,9 +35,18 @@ impl WebHandle {
     }
 }
 
-/// 绑定端口并启动监听线程。
+/// 启动面板：地址与认证状态都从当前配置实时读取。
 pub fn start(ctx: Arc<AdminContext>) -> Result<WebHandle, String> {
-    let listen = ctx.listen.clone();
+    let web = ctx.web_config();
+    let listener = bind(&web.listen, ctx.auth().enabled())?;
+    serve(ctx, listener, web.listen)
+}
+
+/// 预绑定监听地址，但不启动线程。
+///
+/// 配置热更新时先用它验证新地址确实可用，再写盘并切换监听器；绑定失败就整次
+/// 回滚，旧监听保持不动，面板不会因为一次改错地址而失联。
+pub fn bind(listen: &str, auth_enabled: bool) -> Result<TcpListener, String> {
     let addr: SocketAddr = listen
         .parse()
         .map_err(|_| format!("Web 面板监听地址无效: {listen}（需为 ip:port）"))?;
@@ -45,7 +55,7 @@ pub fn start(ctx: Arc<AdminContext>) -> Result<WebHandle, String> {
     //
     // 配置校验只会在启动时给出警告，不能作为唯一防线；这里做硬性拦截，避免
     // 把包含 AList 令牌与媒体服务器 API Key 的配置接口暴露到网络上。
-    if !ctx.auth.enabled() && !addr.ip().is_loopback() {
+    if !auth_enabled && !addr.ip().is_loopback() {
         return Err(format!(
             "Web 面板监听 {addr} 但未设置访问密码，已拒绝启动；请设置 web.password，或改为回环地址（例如 127.0.0.1:8080）"
         ));
@@ -56,6 +66,18 @@ pub fn start(ctx: Arc<AdminContext>) -> Result<WebHandle, String> {
     listener
         .set_nonblocking(true)
         .map_err(|err| format!("设置 Web 面板非阻塞监听失败: {err}"))?;
+    Ok(listener)
+}
+
+/// 用已绑定的监听器接管面板服务。
+pub fn serve(
+    ctx: Arc<AdminContext>,
+    listener: TcpListener,
+    listen: String,
+) -> Result<WebHandle, String> {
+    let addr = listener
+        .local_addr()
+        .map_err(|err| format!("读取 Web 面板监听地址失败: {err}"))?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
@@ -65,6 +87,7 @@ pub fn start(ctx: Arc<AdminContext>) -> Result<WebHandle, String> {
         .map_err(|err| format!("启动 Web 面板线程失败: {err}"))?;
 
     Ok(WebHandle {
+        listen,
         stop,
         thread: Some(thread),
     })
@@ -143,6 +166,10 @@ fn handle_connection(
     peer: SocketAddr,
     ctx: &AdminContext,
 ) -> io::Result<()> {
+    // listener 是非阻塞的；Windows 上 accept 出来的 TcpStream 会继承该状态，而
+    // http::read_request 用的是阻塞式 read。不显式改回阻塞时，对端数据尚未到达
+    // 就会立刻返回 WouldBlock（os error 10035），高并发下被误判为请求失败。
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
 

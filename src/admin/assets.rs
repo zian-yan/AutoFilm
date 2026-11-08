@@ -7,6 +7,9 @@ pub const INDEX_HTML: &str = include_str!("assets/index.html");
 pub const APP_CSS: &str = include_str!("assets/app.css");
 pub const APP_JS: &str = include_str!("assets/app.js");
 
+/// 站点图标：从品牌标记抠图后生成的多尺寸 ICO（16/32/48/64）。
+pub const FAVICON_ICO: &[u8] = include_bytes!("assets/favicon.ico");
+
 /// 登录页：独立于主面板的极简页面，不加载主面板脚本。
 pub const LOGIN_HTML: &str = include_str!("assets/login.html");
 pub const LOGIN_CSS: &str = include_str!("assets/login.css");

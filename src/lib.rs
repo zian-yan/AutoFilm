@@ -10,4 +10,5 @@ pub mod library_poster;
 pub mod logging;
 pub mod media_server;
 pub mod schedule;
+pub mod task_log;
 pub mod web_config;

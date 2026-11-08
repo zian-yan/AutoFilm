@@ -68,10 +68,6 @@ impl Response {
         Self::new(200, "text/html; charset=utf-8", body)
     }
 
-    pub fn empty(status: u16) -> Self {
-        Self::new(status, "text/plain; charset=utf-8", Vec::new())
-    }
-
     /// 302 跳转；未登录访问页面时用来转到登录页。
     pub fn redirect(location: impl Into<String>) -> Self {
         Self::new(302, "text/plain; charset=utf-8", Vec::new()).with_header("Location", location)
@@ -206,6 +202,7 @@ fn status_text(status: u16) -> &'static str {
         409 => "Conflict",
         413 => "Payload Too Large",
         422 => "Unprocessable Entity",
+        423 => "Locked",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         503 => "Service Unavailable",

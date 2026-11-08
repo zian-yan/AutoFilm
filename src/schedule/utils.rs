@@ -66,6 +66,17 @@ pub fn shared_guard(key: &str) -> Arc<TaskRunGuard> {
     registry.entry(key.to_string()).or_default().clone()
 }
 
+/// 热重载后淘汰陈旧闸门：只保留当前配置里的任务，以及仍在运行中的旧任务。
+///
+/// 运行中的 guard 绝不能删——旧调度器里那条任务还持有 Arc 引用，删掉表项会让
+/// 新调度器为同一个 key 新建一个 guard，前后两轮任务就不再互斥了。
+pub fn prune_guards(active_keys: &[String]) {
+    let registry = RUN_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|err| err.into_inner());
+    registry
+        .retain(|key, guard| guard.is_running() || active_keys.iter().any(|active| active == key));
+}
+
 /// 列出当前正在运行的任务键（`模块:任务 ID`），供面板展示运行状态。
 pub fn running_keys() -> Vec<String> {
     let registry = RUN_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -178,6 +189,41 @@ mod tests {
         // 不同任务互不影响。
         let other = shared_guard("test:另一个任务");
         assert!(other.try_acquire().is_some());
+    }
+
+    #[test]
+    fn running_keys_reports_only_active_tasks() {
+        let active = shared_guard("running_keys_test:任务A");
+        let _ = shared_guard("running_keys_test:任务B");
+        let slot = active.try_acquire().expect("首次应能占用执行权");
+        let keys = running_keys();
+        assert!(keys.contains(&"running_keys_test:任务A".to_string()));
+        assert!(!keys.contains(&"running_keys_test:任务B".to_string()));
+        drop(slot);
+        assert!(!running_keys().contains(&"running_keys_test:任务A".to_string()));
+    }
+
+    #[test]
+    fn prune_guards_keeps_active_and_running_entries() {
+        let active_key = "prune_guards_test:保留".to_string();
+        let stale_key = "prune_guards_test:陈旧".to_string();
+        let running_key = "prune_guards_test:运行中".to_string();
+
+        let active = shared_guard(&active_key);
+        let _ = shared_guard(&stale_key);
+        let running = shared_guard(&running_key);
+        let slot = running.try_acquire().expect("首次应能占用执行权");
+
+        prune_guards(&[active_key.clone()]);
+        {
+            let registry = RUN_GUARDS.get().unwrap().lock().unwrap();
+            assert!(registry.contains_key(&active_key), "当前配置里的任务要保留");
+            assert!(!registry.contains_key(&stale_key), "陈旧条目应被淘汰");
+            assert!(registry.contains_key(&running_key), "运行中的旧任务不能删");
+        }
+        // 已取到手的 Arc 仍然有效，且和表里的引用是同一个闸门。
+        assert!(active.try_acquire().is_some());
+        drop(slot);
     }
 
     #[test]

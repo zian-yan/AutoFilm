@@ -48,7 +48,7 @@ pub fn schema() -> Value {
             {
                 "key": "media_servers",
                 "title": "媒体服务器",
-                "subtitle": "Jellyfin / Emby 连接信息，供媒体库海报任务使用",
+                "subtitle": "Jellyfin / Emby 连接信息；下方是依赖这些服务器的媒体库海报任务",
                 "item_label": "媒体服务器",
                 "addable": true,
                 "removable": true,
@@ -83,6 +83,7 @@ pub fn schema() -> Value {
             {
                 "key": "alist2strm",
                 "title": "同步全局设置",
+                "parent": "alist2strm_tasks",
                 "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效",
                 "item_label": "全局设置",
                 "single": true,
@@ -106,7 +107,7 @@ pub fn schema() -> Value {
             {
                 "key": "alist2strm_tasks",
                 "title": "Alist2Strm 任务",
-                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在「同步全局设置」里统一配置",
+                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在本页下方的「同步全局设置」中统一配置",
                 "item_label": "同步任务",
                 "addable": true,
                 "removable": true,
@@ -188,6 +189,7 @@ pub fn schema() -> Value {
             {
                 "key": "library_poster_tasks",
                 "title": "媒体库海报",
+                "parent": "media_servers",
                 "subtitle": "抓取媒体库最新条目，合成海报图并上传到 Jellyfin / Emby",
                 "item_label": "海报任务",
                 "addable": true,
@@ -247,19 +249,19 @@ pub fn schema() -> Value {
         "web_section": {
             "key": "web",
             "title": "Web 面板",
-            "subtitle": "面板自身的监听地址与认证信息（保存在独立的 web.yaml），保存后需要重启进程才会生效",
+            "subtitle": "面板自身的监听地址与认证信息（保存在独立的 web.yaml），保存后实时生效，无需重启进程",
             "item_label": "面板设置",
             "addable": false,
             "removable": false,
-            "restart_required": true,
+            "realtime": true,
             "single": true,
             "detached": true,
             "fields": [
-                { "key": "enable", "label": "启用 Web 面板", "kind": "bool", "help": "关闭后重启将不再提供面板" },
-                { "key": "listen", "label": "监听地址", "kind": "text", "required": true, "placeholder": "127.0.0.1:8080", "help": "必须为 ip:port；非回环地址必须设置密码" },
-                { "key": "username", "label": "用户名", "kind": "text", "help": "登录页的用户名" },
-                { "key": "password", "label": "密码", "kind": "secret", "help": "登录页的密码，留空表示保持原密码不变；密码为空时不启用登录页，仅允许监听回环地址" },
-                { "key": "watch_file", "label": "监听配置文件改动", "kind": "bool", "help": "手工编辑 YAML 后自动触发重载（同时监听 config.yaml 与 web.yaml）" }
+                { "key": "enable", "label": "启用 Web 面板", "kind": "bool", "help": "保存后立即启停面板；关闭后当前页面会断开连接" },
+                { "key": "listen", "label": "监听地址", "kind": "text", "required": true, "placeholder": "127.0.0.1:8080", "help": "必须为 ip:port；非回环地址必须设置密码，保存后立即切换监听" },
+                { "key": "username", "label": "用户名", "kind": "text", "help": "登录页的用户名，保存后立即生效" },
+                { "key": "password", "label": "密码", "kind": "secret", "help": "登录页的密码，留空表示保持原密码不变；改动后所有登录会话立即失效" },
+                { "key": "watch_file", "label": "监听配置文件改动", "kind": "bool", "help": "手工编辑 YAML 后自动触发重载（同时监听 config.yaml 与 web.yaml），开关改动即时生效" }
             ]
         },
         "library_fields": [

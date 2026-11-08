@@ -30,7 +30,7 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
 
     // 登录页与它的静态资源必须始终可达，否则未登录用户会被重定向到自己。
     if request.method == "GET" && is_login_asset(&request.path) {
-        if !ctx.auth.enabled() || is_authenticated(ctx, request) {
+        if !ctx.auth().enabled() || is_authenticated(ctx, request) {
             return Response::redirect("/");
         }
         return match request.path.as_str() {
@@ -49,7 +49,13 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         return login_handler(ctx, request);
     }
 
-    if ctx.auth.enabled() {
+    // 站点图标对登录页与主面板都公开，需放在认证判断之前。
+    if request.method == "GET" && request.path == "/favicon.ico" {
+        return Response::new(200, "image/x-icon", assets::FAVICON_ICO);
+    }
+
+    let auth = ctx.auth();
+    if auth.enabled() {
         if let Some(remaining) = ctx.guard.locked_remaining(&request.remote_addr) {
             let message = format!("认证失败次数过多，请在 {remaining} 秒后重试");
             return if request.path.starts_with("/api/") {
@@ -91,7 +97,6 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         ("GET", "/assets/app.js") => {
             Response::new(200, "application/javascript; charset=utf-8", assets::APP_JS)
         }
-        ("GET", "/favicon.ico") => Response::empty(204),
         ("GET", "/api/state") => state_handler(ctx),
         ("GET", "/api/runtime") => runtime_handler(ctx),
         ("GET", "/api/config.yaml") => config_yaml_handler(ctx),
@@ -100,6 +105,7 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         ("PUT", "/api/web") => save_web_handler(ctx, request),
         ("POST", "/api/run") => run_handler(ctx, request),
         ("POST", "/api/run-all") => run_all_handler(ctx, request),
+        ("POST", "/api/task-log") => task_log_handler(request),
         ("POST", "/api/browse") => browse_handler(ctx, request),
         ("POST", "/api/logout") => logout_handler(ctx, request),
         ("POST", "/api/reload") => reload_handler(ctx),
@@ -124,7 +130,7 @@ fn is_authenticated(ctx: &AdminContext, request: &Request) -> bool {
     }
 
     // 保留 Basic：curl 或自动化脚本仍可直接带凭据访问，不必先走登录页。
-    ctx.auth.verify(request.header("authorization"))
+    ctx.auth().verify(request.header("authorization"))
 }
 
 /// 构造会话 Cookie：HttpOnly 防止脚本读取，SameSite=Strict 阻断跨站携带。
@@ -145,7 +151,8 @@ fn cleared_cookie() -> String {
 
 /// 登录：校验凭据后签发会话 Cookie。
 fn login_handler(ctx: &AdminContext, request: &Request) -> Response {
-    if !ctx.auth.enabled() {
+    let auth = ctx.auth();
+    if !auth.enabled() {
         return Response::json(400, &json!({ "message": "面板未设置访问密码，无需登录" }));
     }
 
@@ -174,7 +181,7 @@ fn login_handler(ctx: &AdminContext, request: &Request) -> Response {
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    if !ctx.auth.verify_credentials(username, password) {
+    if !auth.verify_credentials(username, password) {
         ctx.guard.register_failure(&request.remote_addr);
         info!(peer = %request.remote_addr, username = %username, "面板登录失败");
         return Response::json(401, &json!({ "message": "用户名或密码错误" }));
@@ -227,9 +234,9 @@ fn state_handler(ctx: &AdminContext) -> Response {
                 "config_path": ctx.config_path.display().to_string(),
                 "web_config_path": ctx.web_config_path.display().to_string(),
                 "timezone": ctx.timezone.clone(),
-                "watch_file": ctx.watch_file,
-                "listen": ctx.listen.clone(),
-                "auth_enabled": ctx.auth.enabled(),
+                "watch_file": web.config.watch_file,
+                "listen": web.config.listen.clone(),
+                "auth_enabled": !web.config.password.is_empty(),
                 "password_set": !web.config.password.is_empty(),
                 "started_at": ctx.started_at.clone(),
             },
@@ -292,7 +299,7 @@ fn run_handler(ctx: &AdminContext, request: &Request) -> Response {
     let Some(task) = task else {
         return Response::json(
             404,
-            &json!({ "message": format!("任务「{id}」不存在或尚未就绪，请先保存并应用配置") }),
+            &json!({ "message": format!("任务「{id}」不存在或尚未就绪，请先保存配置") }),
         );
     };
 
@@ -340,6 +347,51 @@ fn run_all_handler(ctx: &AdminContext, request: &Request) -> Response {
     Response::json(
         202,
         &json!({ "message": format!("已触发 {count} 个任务，执行结果见日志"), "count": count }),
+    )
+}
+
+/// 读取单个任务的运行日志。
+///
+/// 请求体 `{"module": "...", "id": "..."}`；只返回该任务自己的日志行（按时间
+/// 顺序），并附带是否正在运行，供面板在执行期间持续刷新。
+fn task_log_handler(request: &Request) -> Response {
+    let body = match request.json_body() {
+        Ok(body) => body,
+        Err(message) => return Response::text(400, message),
+    };
+    let module = body
+        .get("module")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if module.is_empty() || id.is_empty() {
+        return Response::json(400, &json!({ "message": "请求体需要 module 与 id" }));
+    }
+    if module.len() > 64 || id.len() > 256 {
+        return Response::json(400, &json!({ "message": "任务标识过长" }));
+    }
+
+    let key = crate::task_log::task_key(module, id);
+    let lines = crate::task_log::get()
+        .map(|store| store.read(&key))
+        .unwrap_or_default();
+    let running = crate::schedule::running_tasks()
+        .iter()
+        .any(|item| item == &key);
+
+    Response::json(
+        200,
+        &json!({
+            "key": key,
+            "lines": lines,
+            "running": running,
+            "limit": crate::task_log::MAX_LINES,
+        }),
     )
 }
 
@@ -391,7 +443,7 @@ fn browse_handler(ctx: &AdminContext, request: &Request) -> Response {
         return Response::json(
             404,
             &json!({
-                "message": format!("AList 客户端「{alist_id}」尚未就绪，请先保存并应用配置"),
+                "message": format!("AList 客户端「{alist_id}」尚未就绪，请先保存配置"),
             }),
         );
     };
@@ -609,7 +661,7 @@ fn conflict(label: &str, body: &Value, current_version: u64) -> Option<Response>
         409,
         &json!({
             "message": format!(
-                "{label}已被其他会话修改（当前版本 {current_version}），请重新加载后再保存"
+                "{label}已被其他会话或外部文件修改（当前版本 {current_version}），请刷新页面获取最新配置后再保存"
             ),
             "version": current_version,
         }),
@@ -717,7 +769,7 @@ fn finish(receiver: std_mpsc::Receiver<ApplyOutcome>, label: &str) -> Response {
     match outcome {
         ApplyOutcome::Applied(report) => {
             let message = if report.scope == "web" {
-                "面板配置已保存，重启进程后生效".to_string()
+                "面板配置已保存并实时生效".to_string()
             } else {
                 format!("配置已保存并生效，共 {} 个调度任务", report.scheduled_count)
             };
@@ -729,6 +781,16 @@ fn finish(receiver: std_mpsc::Receiver<ApplyOutcome>, label: &str) -> Response {
                     "scope": report.scope,
                     "report": report,
                 }),
+            )
+        }
+        ApplyOutcome::Locked(tasks) => {
+            let message = format!(
+                "任务 {} 正在运行，其配置已锁定；请等任务结束后再修改",
+                tasks.join("、")
+            );
+            Response::json(
+                423,
+                &json!({ "message": message, "locked_tasks": tasks, "errors": [] }),
             )
         }
         ApplyOutcome::Rejected(errors) => {

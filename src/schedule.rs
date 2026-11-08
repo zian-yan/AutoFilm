@@ -1,4 +1,4 @@
-mod utils;
+pub(crate) mod utils;
 
 use std::{
     collections::HashMap,
@@ -11,10 +11,11 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use croner::parser::{CronParser, Seconds};
 use tokio_cron_scheduler::{Job, JobScheduler, JobSchedulerError};
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
     alist2strm::Alist2Strm, ani2alist::Ani2Alist, config::Config, library_poster::LibraryPoster,
+    task_log,
 };
 
 /// Alist2Strm 任务的模块名，同时用作面板接口的 `module` 参数。
@@ -75,6 +76,12 @@ impl RunRegistry {
             .cloned()
             .collect()
     }
+
+    /// 当前注册的全部任务键（`模块:任务 ID`），供热重载后清理陈旧缓存与闸门。
+    pub fn keys(&self) -> Vec<String> {
+        let tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        tasks.keys().cloned().collect()
+    }
 }
 
 /// 计算某个 cron 表达式在给定时区下的下次运行时间。
@@ -96,6 +103,17 @@ pub fn next_run_at(cron: &str, tz: Tz) -> Option<DateTime<Tz>> {
 /// 当前正在运行的任务键集合（`模块:任务 ID`）。
 pub fn running_tasks() -> Vec<String> {
     utils::running_keys()
+}
+
+/// 给任务执行入口挂上任务日志 span。
+///
+/// 包装后的 `run` 同时交给 Registry（面板「立即运行」）和 cron Job（定时触发），
+/// 因此两种触发方式产生的 tracing 事件都会归到同一个任务的日志文件里。
+fn with_task_log(run: RunFn, key: String) -> RunFn {
+    Arc::new(move || -> RunFuture {
+        let future = run();
+        Box::pin(future.instrument(task_log::task_span(&key)))
+    })
 }
 
 /// 一次调度器构建的产物。
@@ -205,6 +223,7 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                 })
             })
         };
+        let run = with_task_log(run, task_log::task_key(MODULE_ALIST2STRM, &task_id));
 
         registry.insert(RegisteredTask {
             module: MODULE_ALIST2STRM,
@@ -283,6 +302,7 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                 })
             })
         };
+        let run = with_task_log(run, task_log::task_key(MODULE_ANI2ALIST, &task_id));
 
         registry.insert(RegisteredTask {
             module: MODULE_ANI2ALIST,
@@ -378,6 +398,7 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                 })
             })
         };
+        let run = with_task_log(run, task_log::task_key(MODULE_LIBRARY_POSTER, &task_id));
 
         registry.insert(RegisteredTask {
             module: MODULE_LIBRARY_POSTER,
@@ -401,6 +422,12 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
         "子任务调度完成"
     );
     info!(scheduled_count, "全部子任务调度完成");
+
+    // 新注册表就绪后，清掉历史配置遗留的任务闸门与任务日志内存缓存。运行中
+    // 的旧任务闸门会保留，磁盘日志按保留天数清理，刚删掉的任务历史仍可回查。
+    let active_keys = registry.keys();
+    utils::prune_guards(&active_keys);
+    task_log::prune(&active_keys);
 
     Ok(Scheduled {
         scheduler,

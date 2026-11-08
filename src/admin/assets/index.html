@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark light" />
   <title>AutoFilm 控制台</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand brand">
         <span class="brand-mark" aria-hidden="true">AF</span>
         <span class="brand-text">
           <strong>AutoFilm</strong>
@@ -18,32 +19,30 @@
         </span>
       </div>
       <nav id="nav" class="nav" aria-label="配置分区"></nav>
-      <div class="topbar-right">
+      <div class="sidebar-foot">
         <span id="app-version" class="version">-</span>
-        <button id="btn-logout" class="btn btn-icon is-hidden" type="button" aria-label="退出登录"></button>
-        <button id="btn-theme" class="btn btn-icon" type="button" aria-label="切换主题"></button>
+        <div class="sidebar-tools">
+          <button id="btn-logout" class="btn btn-icon is-hidden" type="button" aria-label="退出登录"></button>
+          <button id="btn-theme" class="btn btn-icon" type="button" aria-label="切换主题"></button>
+        </div>
       </div>
-    </div>
-  </header>
+    </aside>
 
-  <main class="main">
-    <div class="page-head">
-      <div>
-        <h1 id="section-title">总览</h1>
-        <p id="section-subtitle" class="muted"></p>
+    <main class="main">
+      <div class="page-head">
+        <div>
+          <h1 id="section-title">配置</h1>
+          <p id="section-subtitle" class="muted"></p>
+        </div>
+        <div class="page-actions">
+          <span id="save-status" class="save-status save-status-saved" role="status">全部更改已实时生效</span>
+        </div>
       </div>
-      <div class="page-actions">
-        <span id="dirty-pill" class="pill pill-warn is-hidden">未保存</span>
-        <button id="btn-reload" class="btn btn-ghost" type="button">重新加载</button>
-        <button id="btn-save" class="btn btn-primary" type="button">保存并应用</button>
-      </div>
-    </div>
 
-    <div id="alert" class="alert is-hidden" role="alert"></div>
-    <div id="content" class="content"></div>
-
-    <footer id="runtime-line" class="footer"></footer>
-  </main>
+      <div id="alert" class="alert is-hidden" role="alert"></div>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
 
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
   <script src="/assets/app.js"></script>

@@ -114,6 +114,15 @@ impl SessionStore {
         Self::default()
     }
 
+    /// 清空全部会话。
+    ///
+    /// 面板用户名或密码实时变更后调用：旧凭据签发的 Cookie 不应继续有效。
+    pub fn clear(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.sessions.clear();
+        }
+    }
+
     /// 签发一个新会话，返回写进 Cookie 的 token。
     pub fn issue(&self) -> Option<String> {
         let mut inner = self.inner.lock().ok()?;

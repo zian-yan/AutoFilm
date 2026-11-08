@@ -4,20 +4,27 @@
  * AutoFilm 管理控制台前端。
  *
  * 数据流仍是「读取整份配置 → 本地编辑 → 整份提交」：提交时携带 base_version 做
- * 乐观并发控制，后端校验通过后写盘并热重载调度器。字段结构全部来自 /api/state
+ * 乐观并发控制，后端校验通过后写盘并实时应用。字段结构全部来自 /api/state
  * 返回的 schema，前端不硬编码字段，避免与 Rust 结构体漂移。
  *
- * 配置分成两份互不影响的文档：
- * - state.config / state.version：业务配置（config.yaml），保存后热重载调度器；
- * - state.web / state.webVersion：面板配置（web.yaml），保存后需重启进程生效。
+ * 配置分成两份互不影响的文档，两者都是保存即生效、无需重启：
+ * - state.config / state.version：业务配置（config.yaml），热重载调度器；
+ * - state.web / state.webVersion：面板配置（web.yaml），热切换监听与认证。
  *
- * 列表型分区的交互：默认只显示摘要表格，点「编辑」才在行下方展开完整表单；
- * 「立即运行」直接调用后端 /api/run，与定时触发共用同一个执行入口。
+ * 保存按钮放在编辑弹窗（列表分区）与单值卡片里：点保存立即落盘生效，不再有
+ * 顶部「保存并应用 / 重新加载」。正在运行的任务会被锁定——只有那一行不能编辑
+ * 或删除，其它分区与其它任务照常修改；任务停止后锁定自动解除。
  */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const THEME_KEY = 'autofilm-theme';
 const POLL_INTERVAL = 3000;
+/** 日志弹层的刷新频率：500ms 轮询，兼顾准实时观感与本机请求开销。 */
+const TASK_LOG_POLL_INTERVAL = 500;
+/** 单次日志请求超时：避免请求挂住后在途标记永不释放。 */
+const TASK_LOG_TIMEOUT = 4000;
+/** 目录浏览请求超时；后端 /api/browse 自身有 10s 上限，这里略放宽。 */
+const BROWSE_TIMEOUT = 12000;
 
 const state = {
   app: null,
@@ -27,17 +34,23 @@ const state = {
   web: null,
   webVersion: 0,
   runtime: {},
-  active: 'overview',
+  // 由 applyState 依据地址栏 hash 决定，空 hash 落到首个配置分区。
+  active: '',
   dirty: false,
   saving: false,
+  /** 顶部保存状态指示：saved / dirty / saving / error / invalid。 */
+  saveState: 'saved',
   savedBusiness: '',
   savedWeb: '',
   theme: 'dark',
-  /** 已展开编辑器的行，键为 `分区#下标`。 */
+  /** 打开弹窗时条目的快照：关闭弹窗即丢弃未保存的改动。 */
+  editorSnapshot: null,
+  /** 当前打开的配置编辑弹窗键（最多一个），格式为 `分区#下标`。 */
   expanded: new Set(),
   /** 刚点过「立即运行」、等后端确认的任务键，用于即时反馈。 */
   pending: new Set(),
   pollTimer: null,
+  pollKick: null,
 };
 
 /* ---------------- 工具函数 ---------------- */
@@ -105,6 +118,7 @@ const ICON_PATHS = {
   'chevron-up': ['M6 14.5l6-6 6 6'],
   chevron: ['M9 6l6 6-6 6'],
   folder: ['M3.5 6.5h6.2l2 2.5h8.8v10h-17z'],
+  'file-text': ['M7 3.5h7l4 4v13H7z', 'M14 3.5v4h4', 'M10 12h6', 'M10 15.5h6'],
   close: ['M6 6l12 12', 'M18 6 6 18'],
   logout: ['M14 4.5H5.5v15H14', 'M11.5 12h9', 'M17.5 8.5 21 12l-3.5 3.5'],
 };
@@ -217,6 +231,17 @@ function allSections() {
 
 function businessSections() {
   return allSections().filter((section) => !section.detached);
+}
+
+// 导航只展示顶层分区；带 parent 的分区并入宿主页面下方一起渲染。
+function topLevelSections() {
+  return allSections().filter((section) => !section.parent);
+}
+
+// 单页要渲染的分区：宿主在前，归属它的子分区按 schema 顺序跟在后面。
+function pageSections(section) {
+  if (!section) return [];
+  return [section, ...allSections().filter((item) => item.parent === section.key)];
 }
 
 function sectionData(section) {
@@ -365,17 +390,6 @@ async function requestSaveWeb(payload) {
   return { response, data };
 }
 
-async function requestReload() {
-  const response = await fetch('/api/reload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
-    body: '{}',
-  });
-  if (redirectIfUnauthorized(response)) return { response, data: {} };
-  const data = await response.json().catch(() => ({}));
-  return { response, data };
-}
-
 async function requestRun(module, id) {
   const response = await fetch('/api/run', {
     method: 'POST',
@@ -398,6 +412,33 @@ async function requestRunAll(module) {
   return { response, data };
 }
 
+/** 只读取一个任务的日志；后端按「模块:任务 ID」隔离，按时间顺序返回。 */
+async function requestTaskLog(module, id, externalSignal) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), TASK_LOG_TIMEOUT);
+  // 弹层关闭时外部 signal 会 abort，让在途请求立刻结束，而不是空等到超时。
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  try {
+    const response = await fetch('/api/task-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
+      body: JSON.stringify({ module, id }),
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (redirectIfUnauthorized(response)) return { response, data: {} };
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  } finally {
+    window.clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
 /* ---------------- 状态装载 ---------------- */
 
 function applyState(data) {
@@ -418,7 +459,9 @@ function applyState(data) {
   byId('btn-logout').classList.toggle('is-hidden', !state.app.auth_enabled);
   renderNav();
   render();
-  if (anyRunning()) startPolling();
+  setSaveStatus('saved');
+  // 轮询常驻：任务开始/结束会实时改变配置锁定状态，不能只在运行时才轮询。
+  startPolling();
 }
 
 async function refresh() {
@@ -434,8 +477,7 @@ async function refresh() {
 function renderNav() {
   const nav = byId('nav');
   nav.textContent = '';
-  nav.appendChild(navButton('overview', '总览'));
-  for (const section of allSections()) {
+  for (const section of topLevelSections()) {
     nav.appendChild(navButton(section.key, section.title));
   }
 }
@@ -447,10 +489,17 @@ function navButton(key, label) {
   return node;
 }
 
+/** 无独立首页：hash 为空或非法时一律落到首个顶层配置分区。 */
+function defaultSectionKey() {
+  const sections = topLevelSections();
+  return sections.length ? sections[0].key : '';
+}
+
 /** 切换分区：同步到地址栏 hash，刷新或分享链接后仍停留在同一分区。 */
 function setActive(key) {
   state.active = key;
-  const hash = key === 'overview' ? '' : `#${encodeURIComponent(key)}`;
+  closeEditor(false);
+  const hash = key === defaultSectionKey() ? '' : `#${encodeURIComponent(key)}`;
   if (window.location.hash !== hash) {
     window.history.replaceState(null, '', hash || window.location.pathname);
   }
@@ -460,46 +509,24 @@ function setActive(key) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-/** 从地址栏 hash 还原当前分区，非法值回落到总览。 */
+/** 从地址栏 hash 还原当前分区；已并入的子分区回落到宿主页，非法值回到首个分区。 */
 function activeFromHash() {
   const key = decodeURIComponent((window.location.hash || '').replace(/^#/, '')).trim();
-  if (!key) return 'overview';
-  if (key === 'overview') return 'overview';
-  return allSections().some((section) => section.key === key) ? key : 'overview';
+  if (!key) return defaultSectionKey();
+  const section = allSections().find((item) => item.key === key);
+  if (!section) return defaultSectionKey();
+  return section.parent || key;
 }
 
 function currentSection() {
-  return allSections().find((section) => section.key === state.active) || null;
+  const sections = topLevelSections();
+  return sections.find((section) => section.key === state.active) || sections[0] || null;
 }
 
 function updateChrome() {
   const section = currentSection();
-  byId('section-title').textContent = section ? section.title : '总览';
-  byId('section-subtitle').textContent = section
-    ? section.subtitle || ''
-    : '运行状态、配置概览与校验规则';
-  byId('dirty-pill').classList.toggle('is-hidden', !state.dirty);
-  updateRuntimeLine();
-}
-
-function runtimeParts() {
-  const parts = [];
-  parts.push(`业务配置 v${state.version}`);
-  parts.push(`面板配置 v${state.webVersion}`);
-  if (state.runtime.scheduled_count != null) parts.push(`调度任务 ${state.runtime.scheduled_count}`);
-  const running = (state.runtime.running || []).length;
-  if (running) parts.push(`运行中 ${running}`);
-  if (state.runtime.last_reload_at) {
-    parts.push(
-      `最近重载 ${state.runtime.last_reload_at}（${state.runtime.last_reload_source || '未知来源'}）`,
-    );
-  }
-  if (state.runtime.last_error) parts.push(`最近错误：${state.runtime.last_error}`);
-  return parts;
-}
-
-function updateRuntimeLine() {
-  byId('runtime-line').textContent = runtimeParts().join(' · ');
+  byId('section-title').textContent = section ? section.title : '';
+  byId('section-subtitle').textContent = section ? section.subtitle || '' : '';
 }
 
 function render() {
@@ -507,18 +534,21 @@ function render() {
   const content = byId('content');
   content.textContent = '';
 
-  const section = currentSection();
-  if (!section) {
-    renderOverview(content);
-  } else if (section.single) {
-    renderSingleSection(content, section);
-  } else {
-    renderListSection(content, section);
-  }
+  // 宿主页依次渲染自身卡片与下方子分区卡片；保存动作在各卡片 / 弹窗内完成。
+  pageSections(currentSection()).forEach((section, index) => {
+    renderSection(content, section, index > 0 ? section.title : null);
+  });
   updateChrome();
+  renderEditorModal();
+  syncLocks();
 }
 
-/* ---------------- 渲染：总览 ---------------- */
+function renderSection(container, section, heading) {
+  if (section.single) renderSingleSection(container, section, heading);
+  else renderListSection(container, section, heading);
+}
+
+/* ---------------- 渲染：卡片 ---------------- */
 
 function cardHead(title, subtitle, actions) {
   const head = element('header', 'card-head');
@@ -530,43 +560,14 @@ function cardHead(title, subtitle, actions) {
   return head;
 }
 
-function statCard(label, value, hint) {
-  const node = element('div', 'stat');
-  node.appendChild(element('span', 'stat-label', label));
-  node.appendChild(element('span', 'stat-value', value));
-  if (hint) node.appendChild(element('span', 'stat-hint', hint));
-  return node;
-}
-
-// 总览只保留状态卡片：配置文件位置、校验规则等说明已从页面移除。
-function renderOverview(container) {
-  const stats = element('div', 'grid-cards');
-  const running = (state.runtime.running || []).length;
-  stats.appendChild(statCard('业务配置版本', `v${state.version}`, '每次成功应用后自增'));
-  stats.appendChild(statCard('面板配置版本', `v${state.webVersion}`, '保存在独立的 web.yaml'));
-  stats.appendChild(
-    statCard('调度任务', String(state.runtime.scheduled_count ?? 0), '当前已注册的定时任务数量'),
-  );
-  stats.appendChild(
-    statCard('运行中', String(running), running ? '正在执行的任务' : '当前空闲'),
-  );
-  stats.appendChild(
-    statCard(
-      '最近热重载',
-      state.runtime.last_reload_at || '—',
-      state.runtime.last_reload_source || '尚未触发热重载',
-    ),
-  );
-  container.appendChild(stats);
-}
-
 /* ---------------- 渲染：单一设置分区 ---------------- */
 
-function renderSingleSection(container, section) {
+function renderSingleSection(container, section, heading) {
   const wrapper = element('section', 'card');
   const actions = element('div', 'card-actions');
-  if (section.restart_required) actions.appendChild(element('span', 'pill pill-warn', '重启生效'));
-  wrapper.appendChild(cardHead(section.item_label, '', actions));
+  if (section.realtime) actions.appendChild(element('span', 'pill pill-live', '实时生效'));
+  actions.appendChild(button('btn btn-primary btn-small', '保存', 'save', () => save()));
+  wrapper.appendChild(cardHead(heading || section.item_label, '', actions));
 
   const body = element('div', 'card-body padded');
   const grid = element('div', 'editor-grid');
@@ -592,18 +593,145 @@ function columnsOf(section) {
   return columns;
 }
 
+let editorModal = null;
+
 function isExpanded(section, index) {
   return state.expanded.has(`${section.key}#${index}`);
 }
 
-function toggleEditor(section, index) {
-  const key = `${section.key}#${index}`;
-  if (state.expanded.has(key)) state.expanded.delete(key);
-  else state.expanded.add(key);
+/** 丢弃弹窗内未保存的改动，恢复打开时的条目快照。 */
+function discardEditorDraft() {
+  const snapshot = state.editorSnapshot;
+  if (!snapshot) return;
+  const items = state.config[snapshot.sectionKey];
+  if (!items) return;
+  if (snapshot.created) {
+    items.splice(snapshot.index, 1);
+  } else if (items[snapshot.index]) {
+    items[snapshot.index] = snapshot.item;
+  }
+  syncDirty();
+}
+
+/** 关闭配置编辑弹窗。默认视为「取消」，未点保存的改动一律丢弃。 */
+function closeEditor(sync = true, keepDraft = false) {
+  if (!editorModal && state.expanded.size === 0 && !state.editorSnapshot) return;
+  closeAlistBrowser();
+  if (!keepDraft) discardEditorDraft();
+  state.editorSnapshot = null;
+  if (editorModal) {
+    window.removeEventListener('keydown', editorModal.onKeydown);
+    editorModal.mask.remove();
+    editorModal = null;
+  }
+  state.expanded.clear();
+  if (sync) render();
+}
+
+/** 把一行的配置编辑放进弹窗；created 表示这是刚新增、尚未保存的条目。 */
+function openEditor(section, index, created = false) {
+  const items = state.config[section.key] || [];
+  if (!items[index]) return;
+  closeTaskLog();
+  closeEditor(false);
+  state.editorSnapshot = {
+    sectionKey: section.key,
+    index,
+    item: deepClone(items[index]),
+    created,
+  };
+  state.expanded.add(`${section.key}#${index}`);
+
+  const mask = element('div', 'modal-mask');
+  const modal = element('div', 'modal modal-editor');
+
+  const head = element('div', 'modal-head');
+  head.appendChild(element('span', 'modal-title', '配置编辑'));
+  head.appendChild(iconButton('', 'close', '关闭', () => closeEditor()));
+  modal.appendChild(head);
+
+  const body = element('div', 'modal-body editor-modal-body');
+  const foot = element('div', 'modal-foot');
+  modal.appendChild(body);
+  modal.appendChild(foot);
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+
+  const onKeydown = (event) => {
+    if (event.key === 'Escape') closeEditor();
+  };
+  const onMaskClick = (event) => {
+    if (event.target === mask) closeEditor();
+  };
+  window.addEventListener('keydown', onKeydown);
+  mask.addEventListener('click', onMaskClick);
+
+  editorModal = { mask, head, body, foot, onKeydown };
   render();
 }
 
-function renderListSection(container, section) {
+/** 每次重绘都按当前数据重建弹窗内容，字段联动与校验定位继续生效。 */
+function renderEditorModal() {
+  if (!editorModal) return;
+  const key = [...state.expanded][0];
+  const [sectionKey, indexText] = (key || '').split('#');
+  const index = Number(indexText);
+  const section = allSections().find((item) => item.key === sectionKey);
+  const items = section ? state.config[sectionKey] || [] : [];
+  const item = items[index];
+  if (!section || !item) {
+    closeEditor(false);
+    return;
+  }
+
+  editorModal.head.querySelector('.modal-title').textContent =
+    `编辑：${item.id ? item.id : `未命名${section.item_label}`}`;
+  if (section.module) editorModal.mask.dataset.lockKey = `${section.module}:${item.id || ''}`;
+
+  editorModal.body.textContent = '';
+  if (section.module) {
+    editorModal.body.appendChild(
+      element(
+        'p',
+        'lock-note lock-banner is-hidden',
+        '该任务正在运行，配置已锁定；请等待运行结束后再修改。',
+      ),
+    );
+  }
+  const grid = element('div', 'editor-grid');
+  for (const field of section.fields || []) {
+    const node = renderField(section, item, index, field);
+    if (node) grid.appendChild(node);
+  }
+  editorModal.body.appendChild(grid);
+
+  editorModal.foot.textContent = '';
+  if (section.removable) {
+    const remove = button('btn btn-danger btn-small', '删除', 'trash', () =>
+      removeItem(section, index, item),
+    );
+    remove.classList.add('lock-sensitive');
+    editorModal.foot.appendChild(remove);
+  }
+  if (section.module) {
+    editorModal.foot.appendChild(
+      button('btn btn-ghost btn-small', '立即运行', 'play', () => runTask(section, item)),
+    );
+  }
+  editorModal.foot.appendChild(
+    button('btn btn-ghost btn-small', '取消', 'close', () => closeEditor()),
+  );
+  const saveButton = button('btn btn-primary btn-small', '保存', 'save', () => saveEditor());
+  saveButton.classList.add('lock-sensitive');
+  editorModal.foot.appendChild(saveButton);
+}
+
+function toggleEditor(section, index) {
+  if (isExpanded(section, index)) closeEditor();
+  else openEditor(section, index);
+}
+
+function renderListSection(container, section, heading) {
   const items = Array.isArray(state.config[section.key]) ? state.config[section.key] : [];
   const columns = columnsOf(section);
 
@@ -618,7 +746,7 @@ function renderListSection(container, section) {
       button('btn btn-primary', `添加${section.item_label}`, 'plus', () => addItem(section)),
     );
   }
-  wrapper.appendChild(cardHead(`${items.length} 个${section.item_label}`, '', actions));
+  wrapper.appendChild(cardHead(heading || `${items.length} 个${section.item_label}`, '', actions));
 
   const body = element('div', 'card-body');
   if (!items.length) {
@@ -648,9 +776,6 @@ function renderListSection(container, section) {
   const tbody = element('tbody');
   items.forEach((item, index) => {
     tbody.appendChild(renderRow(section, item, index, columns));
-    if (isExpanded(section, index)) {
-      tbody.appendChild(renderEditorRow(section, item, index, columns.length + 1));
-    }
   });
   table.appendChild(tbody);
   scroller.appendChild(table);
@@ -662,11 +787,16 @@ function renderListSection(container, section) {
 function renderRow(section, item, index, columns) {
   const row = element('tr', `row${isExpanded(section, index) ? ' is-editing' : ''}`);
   row.dataset.rowKey = `${section.key}#${index}`;
+  const key = section.module ? `${section.module}:${item.id || ''}` : '';
+  if (section.module) row.dataset.lockKey = key;
 
   columns.forEach((column, columnIndex) => {
     const cell = element('td');
     if (columnIndex === 0) cell.classList.add('cell-name');
     cell.appendChild(cellContent(section, item, column));
+    if (columnIndex === 0 && section.module) {
+      cell.appendChild(element('span', 'lock-note is-hidden', '运行中 · 配置已锁定'));
+    }
     row.appendChild(cell);
   });
 
@@ -674,7 +804,6 @@ function renderRow(section, item, index, columns) {
   const group = element('div', 'cell-actions');
 
   if (section.module) {
-    const key = `${section.module}:${item.id || ''}`;
     const running = isRunning(key);
     const play = iconButton(
       'is-play',
@@ -683,23 +812,29 @@ function renderRow(section, item, index, columns) {
       () => runTask(section, item),
     );
     play.dataset.runKey = key;
-    play.dataset.runTitle = '立即运行（按已保存的配置执行）';
+    play.dataset.runTitle = '立即运行（按当前生效的配置执行）';
     play.disabled = running || !item.id;
     if (running) play.classList.add('is-running');
     if (!item.id) play.title = '请先填写任务 ID';
     group.appendChild(play);
+    group.appendChild(
+      iconButton('is-log', 'file-text', '查看运行日志', () => openTaskLog(section, item)),
+    );
   }
 
-  group.appendChild(
-    iconButton('is-edit', 'pencil', isExpanded(section, index) ? '收起配置' : '编辑配置', () =>
-      toggleEditor(section, index),
-    ),
+  const edit = iconButton(
+    'is-edit',
+    'pencil',
+    isExpanded(section, index) ? '关闭编辑' : '编辑配置',
+    () => toggleEditor(section, index),
   );
+  edit.classList.add('lock-sensitive');
+  group.appendChild(edit);
 
   if (section.removable) {
-    group.appendChild(
-      iconButton('is-delete', 'trash', '删除', () => removeItem(section, index, item)),
-    );
+    const remove = iconButton('is-delete', 'trash', '删除', () => removeItem(section, index, item));
+    remove.classList.add('lock-sensitive');
+    group.appendChild(remove);
   }
 
   actionCell.appendChild(group);
@@ -760,65 +895,30 @@ function nextRunText(module, id) {
   return map[`${module}:${id}`] || '';
 }
 
-function renderEditorRow(section, item, index, columnCount) {
-  const row = element('tr', 'editor-row');
-  const cell = element('td', 'editor-cell');
-  cell.colSpan = columnCount;
-
-  const editor = element('div', 'editor');
-
-  const head = element('div', 'editor-head');
-  head.appendChild(
-    element(
-      'span',
-      'editor-title',
-      `编辑：${item.id ? item.id : `未命名${section.item_label}`}`,
-    ),
-  );
-  head.appendChild(button('btn btn-ghost btn-small', '收起', 'chevron-up', () => toggleEditor(section, index)));
-  editor.appendChild(head);
-
-  const grid = element('div', 'editor-grid');
-  for (const field of section.fields || []) {
-    const node = renderField(section, item, index, field);
-    if (node) grid.appendChild(node);
-  }
-  editor.appendChild(grid);
-
-  const foot = element('div', 'editor-foot');
-  if (section.removable) {
-    foot.appendChild(button('btn btn-danger btn-small', '删除', 'trash', () => removeItem(section, index, item)));
-  }
-  if (section.module) {
-    foot.appendChild(button('btn btn-ghost btn-small', '立即运行', 'play', () => runTask(section, item)));
-  }
-  foot.appendChild(button('btn btn-primary btn-small', '完成', 'check', () => toggleEditor(section, index)));
-  editor.appendChild(foot);
-
-  cell.appendChild(editor);
-  row.appendChild(cell);
-  return row;
-}
-
 function addItem(section) {
   const items = Array.isArray(state.config[section.key]) ? state.config[section.key] : [];
   state.config[section.key] = items;
   items.push(deepClone(section.template || {}));
-  // 新条目直接展开，省一次「编辑」点击。
-  state.expanded.add(`${section.key}#${items.length - 1}`);
+  // 新条目直接打开编辑弹窗，填完点「保存」才落盘；取消则整条移除。
+  openEditor(section, items.length - 1, true);
   markDirty();
-  render();
 }
 
 function removeItem(section, index, item) {
+  if (isLocked(section, item)) {
+    toast('warn', '该任务正在运行，配置已锁定，请等任务结束后再删除');
+    return;
+  }
   const label = item && item.id ? item.id : `第 ${index + 1} 个${section.item_label}`;
-  if (!window.confirm(`确认删除「${label}」？保存并应用后生效。`)) return;
+  if (!window.confirm(`确认删除「${label}」？删除后立即保存并生效。`)) return;
+  // 删除是确认动作，不能被「取消编辑」回滚。
+  state.editorSnapshot = null;
+  closeEditor(false);
   const items = state.config[section.key] || [];
   items.splice(index, 1);
-  // 下标已经变化，展开状态一并清掉，避免展开到别的行。
-  state.expanded.clear();
   markDirty();
   render();
+  save();
 }
 
 /* ---------------- 表单字段 ---------------- */
@@ -844,6 +944,10 @@ function renderField(section, item, index, field) {
 
   if (field.help) wrapper.appendChild(element('p', 'field-help', field.help));
   wrapper.dataset.field = path;
+  // 弹窗内所有控件统一标记，任务运行时由 syncLocks 就地禁用（不重绘、不丢焦点）。
+  for (const control of wrapper.querySelectorAll('input, select, textarea, button')) {
+    control.classList.add('lock-sensitive');
+  }
   return wrapper;
 }
 
@@ -1152,6 +1256,9 @@ function openAlistBrowser(item, field, input) {
 
   closeAlistBrowser();
 
+  let disposed = false;
+  const pendingRequests = new Set();
+
   let currentPath = String(input.value || '').trim() || '/';
   let parentPath = null;
 
@@ -1198,11 +1305,22 @@ function openAlistBrowser(item, field, input) {
   mask.addEventListener('click', onMaskClick);
 
   browserClose = () => {
+    disposed = true;
+    for (const controller of pendingRequests) controller.abort();
+    pendingRequests.clear();
     window.removeEventListener('keydown', onKeydown);
     mask.remove();
   };
 
+  let loading = false;
+
   async function load(path) {
+    if (disposed || loading) return;
+    loading = true;
+    const controller = new AbortController();
+    pendingRequests.add(controller);
+    const timer = window.setTimeout(() => controller.abort(), BROWSE_TIMEOUT);
+
     body.textContent = '';
     body.appendChild(element('p', 'modal-hint', '正在读取目录…'));
 
@@ -1211,8 +1329,10 @@ function openAlistBrowser(item, field, input) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
         body: JSON.stringify({ alist: alistId, path }),
+        signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));
+      if (disposed) return;
       if (redirectIfUnauthorized(response)) return;
       if (!response.ok) throw new Error(data.message || `读取目录失败（HTTP ${response.status}）`);
 
@@ -1237,12 +1357,158 @@ function openAlistBrowser(item, field, input) {
         body.appendChild(node);
       }
     } catch (err) {
+      if (disposed) return;
       body.textContent = '';
-      body.appendChild(element('p', 'modal-error', err.message));
+      body.appendChild(
+        element(
+          'p',
+          'modal-error',
+          err.name === 'AbortError' ? '读取目录超时，请重试' : err.message,
+        ),
+      );
+    } finally {
+      window.clearTimeout(timer);
+      pendingRequests.delete(controller);
+      loading = false;
     }
   }
 
   load(currentPath);
+}
+
+/* ---------------- 任务运行日志 ---------------- */
+
+let taskLogClose = null;
+
+function closeTaskLog() {
+  if (!taskLogClose) return;
+  const dispose = taskLogClose;
+  taskLogClose = null;
+  dispose();
+}
+
+/**
+ * 打开单个任务的日志。弹层期间每 0.5 秒重新拉取同一个任务的日志，因此运行中
+ * 新增的行会持续追加；关闭后立刻停止轮询，不留后台请求。同一时刻只保留一个
+ * 在途请求，避免高频轮询时响应乱序或请求堆积。
+ */
+function openTaskLog(section, item) {
+  const module = section.module;
+  const id = String(item.id || '').trim();
+  if (!module || !id) {
+    toast('warn', '任务还没有 ID，请先编辑填写任务 ID 后再查看日志');
+    return;
+  }
+
+  closeTaskLog();
+  closeEditor();
+
+  let disposed = false;
+  // null 表示尚未渲染过，保证首次（哪怕是空日志）也画出空态提示。
+  let lastLines = null;
+  let running = false;
+  let inFlight = false;
+  const logAbort = new AbortController();
+
+  const mask = element('div', 'modal-mask');
+  const modal = element('div', 'modal modal-log');
+
+  const head = element('div', 'modal-head');
+  head.appendChild(element('span', 'modal-title', `运行日志 · ${id}`));
+  const status = element('span', 'pill log-status', '加载中…');
+  head.appendChild(status);
+  head.appendChild(iconButton('', 'close', '关闭', () => closeTaskLog()));
+  modal.appendChild(head);
+
+  const body = element('div', 'modal-body log-body');
+  modal.appendChild(body);
+
+  const foot = element('div', 'modal-foot');
+  foot.appendChild(button('btn btn-ghost btn-small', '刷新', 'refresh', () => refresh()));
+  foot.appendChild(button('btn btn-primary btn-small', '关闭', null, () => closeTaskLog()));
+  modal.appendChild(foot);
+
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+
+  function renderLines(lines) {
+    // 用户往上翻看历史时不强行拽回底部。
+    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 27.6;
+    body.textContent = '';
+    if (!lines.length) {
+      body.appendChild(
+        element('p', 'modal-hint', '暂无运行日志，运行一次任务后即可在这里查看。'),
+      );
+      return;
+    }
+    const list = element('div', 'log-lines');
+    for (const line of lines) {
+      list.appendChild(element('div', 'log-line', line));
+    }
+    body.appendChild(list);
+    if (atBottom) body.scrollTop = body.scrollHeight;
+  }
+
+  function updateStatus() {
+    status.className = running ? 'pill pill-live log-status' : 'pill log-status';
+    status.textContent = running
+      ? '运行中 · 自动刷新'
+      : `共 ${lastLines.length} 行 · 最多保留 1024 行`;
+  }
+
+  async function refresh() {
+    if (disposed || inFlight) return;
+    inFlight = true;
+    try {
+      const { response, data } = await requestTaskLog(module, id, logAbort.signal);
+      if (disposed) return;
+      if (!response.ok) {
+        throw new Error(data.message || `读取日志失败（HTTP ${response.status}）`);
+      }
+      const lines = Array.isArray(data.lines) ? data.lines.map(String) : [];
+      const changed =
+        lastLines === null ||
+        lines.length !== lastLines.length ||
+        lines.some((line, index) => line !== lastLines[index]);
+      lastLines = lines;
+      // 后端 running 来自调度闸门；面板刚点「立即运行」时 pending 也算运行中。
+      running = Boolean(data.running) || isRunning(`${module}:${id}`);
+      if (changed) renderLines(lines);
+      updateStatus();
+    } catch (err) {
+      if (disposed) return;
+      body.textContent = '';
+      body.appendChild(
+        element(
+          'p',
+          'modal-error',
+          err.name === 'AbortError' ? '读取日志超时，正在重试…' : err.message,
+        ),
+      );
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  const onKeydown = (event) => {
+    if (event.key === 'Escape') closeTaskLog();
+  };
+  const onMaskClick = (event) => {
+    if (event.target === mask) closeTaskLog();
+  };
+  window.addEventListener('keydown', onKeydown);
+  mask.addEventListener('click', onMaskClick);
+
+  const timer = window.setInterval(refresh, TASK_LOG_POLL_INTERVAL);
+  taskLogClose = () => {
+    disposed = true;
+    logAbort.abort();
+    window.clearInterval(timer);
+    window.removeEventListener('keydown', onKeydown);
+    mask.remove();
+  };
+
+  refresh();
 }
 
 /* ---------------- 立即运行 ---------------- */
@@ -1283,7 +1549,7 @@ function syncNextRuns() {
 function syncRuntimeUi() {
   syncRunButtons();
   syncNextRuns();
-  updateRuntimeLine();
+  syncLocks();
 }
 
 async function runTask(section, item) {
@@ -1342,13 +1608,15 @@ async function runAll(section) {
 function startPolling() {
   if (state.pollTimer != null) return;
   state.pollTimer = window.setInterval(pollRuntime, POLL_INTERVAL);
-  window.setTimeout(pollRuntime, 900);
+  state.pollKick = window.setTimeout(pollRuntime, 900);
 }
 
 function stopPolling() {
   if (state.pollTimer == null) return;
   window.clearInterval(state.pollTimer);
+  window.clearTimeout(state.pollKick);
   state.pollTimer = null;
+  state.pollKick = null;
 }
 
 async function pollRuntime() {
@@ -1368,13 +1636,24 @@ async function pollRuntime() {
         if (running.includes(key)) state.pending.delete(key);
       }
       syncRuntimeUi();
+
+      // 外部编辑或其它会话改动了配置：本地没有草稿时自动同步，保持界面与运行态一致。
+      const versionChanged =
+        (data.version != null && data.version !== state.version) ||
+        (data.web_version != null && data.web_version !== state.webVersion);
+      if (versionChanged && !state.dirty && !state.saving && !editorModal) {
+        await refresh();
+      }
     }
   } catch (err) {
     /* 轮询失败不打扰用户，下一轮重试 */
   }
 
   // 兜底：触发后 20 秒仍未观测到运行状态，撤掉乐观标记，避免按钮永久卡住。
-  if (state.pending.size && !(state.runtime.running || []).length) {
+  // 兜底计时不能被「其它任务仍在运行」卡住：那会让未被后端确认的 pending key
+  // 一直滞留、轮询永不停止。anyRunning() 仍会依据 state.runtime.running 保住
+  // 真正运行中的任务，所以这里可以独立计数。
+  if (state.pending.size) {
     state.pendingTimer = (state.pendingTimer || 0) + 1;
     if (state.pendingTimer * POLL_INTERVAL > 20000) {
       state.pending.clear();
@@ -1384,15 +1663,64 @@ async function pollRuntime() {
   } else {
     state.pendingTimer = 0;
   }
-
-  if (!anyRunning()) stopPolling();
+  // 轮询常驻：运行中任务的锁定状态需要随时开始 / 解除，不能随任务结束而停。
 }
 
-/* ---------------- 编辑状态 ---------------- */
+/* ---------------- 编辑状态、锁定与保存反馈 ---------------- */
+
+const SAVE_STATUS_TEXT = {
+  saved: '全部更改已实时生效',
+  dirty: '有未保存的改动',
+  saving: '保存中…',
+  error: '保存失败',
+  invalid: '校验未通过，请修正后再保存',
+  locked: '任务运行中，配置已锁定',
+};
+
+function setSaveStatus(kind, text) {
+  const node = byId('save-status');
+  state.saveState = kind;
+  if (!node) return;
+  node.className = `save-status save-status-${kind}`;
+  node.textContent = text || SAVE_STATUS_TEXT[kind] || SAVE_STATUS_TEXT.saved;
+}
+
+/** 依据与上次保存快照的差异重算 dirty，并同步顶部状态。 */
+function syncDirty() {
+  state.dirty =
+    JSON.stringify(businessPayload()) !== state.savedBusiness ||
+    JSON.stringify(webPayload()) !== state.savedWeb;
+  setSaveStatus(state.dirty ? 'dirty' : 'saved');
+  updateChrome();
+}
 
 function markDirty() {
   state.dirty = true;
-  updateChrome();
+  setSaveStatus('dirty');
+}
+
+/** 只有带 module 的任务分区、且该任务正在运行时才锁定。 */
+function isLocked(section, item) {
+  if (!section || !section.module || !item || !item.id) return false;
+  return isRunning(`${section.module}:${item.id}`);
+}
+
+/** 就地更新锁定状态，不重绘 DOM，避免打断正在输入的用户。 */
+function syncLocks() {
+  for (const root of document.querySelectorAll('[data-lock-key]')) {
+    const key = root.dataset.lockKey || '';
+    const locked = !key.endsWith(':') && isRunning(key);
+    root.classList.toggle('is-locked', locked);
+    for (const note of root.querySelectorAll('.lock-note')) {
+      note.classList.toggle('is-hidden', !locked);
+    }
+    for (const node of root.querySelectorAll('.lock-sensitive')) {
+      if (node.dataset.baseDisabled == null) {
+        node.dataset.baseDisabled = node.disabled ? 'true' : 'false';
+      }
+      node.disabled = locked || node.dataset.baseDisabled === 'true';
+    }
+  }
 }
 
 function clearFieldErrors() {
@@ -1407,18 +1735,19 @@ function clearFieldErrors() {
   }
 }
 
-/** 校验失败时把出错行所在的编辑器展开，否则字段根本不在 DOM 里。 */
+/** 校验失败时打开出错行的编辑弹窗，否则字段根本不在 DOM 里。 */
 function revealErrorFields(errors) {
-  let changed = false;
   for (const error of errors) {
     const match = /^([A-Za-z0-9_]+)\[(\d+)\]/.exec(error.field || '');
     if (!match) continue;
-    const key = `${match[1]}#${match[2]}`;
-    if (state.expanded.has(key)) continue;
-    state.expanded.add(key);
-    changed = true;
+    const section = allSections().find((item) => item.key === match[1]);
+    const index = Number(match[2]);
+    if (!section || !(state.config[match[1]] || [])[index]) continue;
+    if (isExpanded(section, index)) return false;
+    openEditor(section, index);
+    return true;
   }
-  return changed;
+  return false;
 }
 
 function applyErrors(errors) {
@@ -1439,55 +1768,67 @@ function applyErrors(errors) {
   showAlert('error', `配置校验未通过（${errors.length} 处问题），已定位到具体字段`, details);
 }
 
-/* ---------------- 保存与重载 ---------------- */
+/* ---------------- 保存（保存即实时生效） ---------------- */
 
 function setBusy(busy) {
-  const save = byId('btn-save');
-  const reload = byId('btn-reload');
-  save.disabled = busy;
-  reload.disabled = busy;
-  save.textContent = busy ? '应用中…' : '保存并应用';
+  if (busy) setSaveStatus('saving');
+  else if (state.saveState === 'saving') syncDirty();
 }
 
 function reportSaveFailure(response, data, label) {
-  if (response.status === 409) {
-    showAlert('error', data.message || `${label}版本冲突，请重新加载后再保存`);
-    toast('error', `${label}已被其他会话修改，请点击「重新加载」`);
+  const message = data.message || `${label}保存失败（HTTP ${response.status}）`;
+
+  if (response.status === 423) {
+    setSaveStatus('locked', message);
+    showAlert('error', message);
+    toast('error', message);
     return;
   }
-
+  if (response.status === 409) {
+    setSaveStatus('error', '配置版本冲突');
+    showAlert('error', message);
+    toast('error', `${label}已被其它会话或外部文件修改，请刷新页面后重试`);
+    return;
+  }
   if (Array.isArray(data.errors) && data.errors.length) {
+    setSaveStatus('invalid', '校验未通过，请修正后再保存');
     if (revealErrorFields(data.errors)) render();
     applyErrors(data.errors);
     toast('error', data.message || `${label}校验未通过`);
     return;
   }
-
-  const message = data.message || `${label}保存失败（HTTP ${response.status}）`;
+  setSaveStatus('error', '保存失败');
   showAlert('error', message);
   toast('error', message);
 }
 
+/**
+ * 保存当前所有改动，返回是否全部成功。
+ *
+ * 成功后只更新本地快照与版本号，不调用 refresh()：重绘会打断正在输入的表单。
+ * 运行时状态与「运行中」标记由常驻轮询负责刷新。
+ */
 async function save() {
-  if (state.saving) return;
+  if (state.saving) return false;
 
   // 两份配置分别判定是否有改动：只提交真正改过的那一份，避免无谓地推进
   // 另一份配置的版本号（也就不会让其他会话白白遇到 409）。
   const businessDirty = JSON.stringify(businessPayload()) !== state.savedBusiness;
   const webDirty = JSON.stringify(webPayload()) !== state.savedWeb;
   if (!businessDirty && !webDirty) {
+    syncDirty();
     toast('warn', '没有需要保存的改动');
-    return;
+    return true;
   }
 
   state.saving = true;
   setBusy(true);
   clearAlert();
 
-  let savedAny = false;
-
   try {
-    const warnings = [];
+    const notes = [];
+    let businessOk = false;
+    let webOk = false;
 
     if (businessDirty) {
       const { response, data } = await requestSave({
@@ -1496,11 +1837,12 @@ async function save() {
       });
       if (!response.ok) {
         reportSaveFailure(response, data, '业务配置');
-        return;
+        return false;
       }
-      savedAny = true;
-      toast('ok', data.message || '业务配置已保存并生效');
-      warnings.push(...((data.report && data.report.warnings) || []));
+      businessOk = true;
+      state.version = data.version;
+      state.savedBusiness = JSON.stringify(businessPayload());
+      notes.push(...((data.report && data.report.warnings) || []));
     }
 
     if (webDirty) {
@@ -1509,70 +1851,45 @@ async function save() {
         web: webPayload(),
       });
       if (!response.ok) {
-        if (savedAny) await refresh();
         reportSaveFailure(response, data, '面板配置');
-        return;
+        return false;
       }
-      savedAny = true;
-      toast('ok', data.message || '面板配置已保存');
-      warnings.push(...((data.report && data.report.warnings) || []));
+      webOk = true;
+      state.webVersion = data.version;
+      state.savedWeb = JSON.stringify(webPayload());
+      notes.push(...((data.report && data.report.warnings) || []));
     }
 
-    // 先刷新再提示：refresh 会清空顶部提示区，顺序反了警告会被立刻抹掉。
-    await refresh();
-    if (warnings.length) {
-      for (const warning of warnings) toast('warn', warning);
-      showAlert('warn', '配置已保存，但部分设置需要重启进程', warnings);
+    syncDirty();
+    toast('ok', businessOk && webOk ? '两份配置已保存并实时生效' : '配置已保存并实时生效');
+    if (notes.length) {
+      for (const note of notes) toast('warn', note);
+      showAlert('warn', '配置已保存并实时生效', notes);
     }
+    return true;
   } catch (err) {
-    showAlert('error', `保存失败：${err.message}`);
-    toast('error', `保存失败：${err.message}`);
+    const message = `保存失败：${err.message}`;
+    setSaveStatus('error', '保存失败');
+    showAlert('error', message);
+    toast('error', message);
+    return false;
   } finally {
     state.saving = false;
     setBusy(false);
   }
 }
 
-async function reloadFromDisk() {
-  if (state.saving) return;
-  if (state.dirty && !window.confirm('当前有未保存的改动，重新加载会丢弃这些改动，继续？')) return;
-
-  state.saving = true;
-  setBusy(true);
-  clearAlert();
-
-  try {
-    const { response, data } = await requestReload();
-    if (response.ok) {
-      toast('ok', data.message || '已重新加载配置文件');
-      for (const warning of (data.report && data.report.warnings) || []) toast('warn', warning);
-      await refresh();
-      return;
-    }
-
-    if (Array.isArray(data.errors) && data.errors.length) {
-      if (revealErrorFields(data.errors)) render();
-      applyErrors(data.errors);
-      toast('error', data.message || '配置文件校验未通过');
-      return;
-    }
-
-    const message = data.message || `重新加载失败（HTTP ${response.status}）`;
-    showAlert('error', message);
-    toast('error', message);
-  } catch (err) {
-    showAlert('error', `重新加载失败：${err.message}`);
-  } finally {
-    state.saving = false;
-    setBusy(false);
-  }
+/** 弹窗内「保存」：成功才关闭，失败时保留弹窗与已填内容。 */
+async function saveEditor() {
+  const ok = await save();
+  if (!ok) return;
+  state.editorSnapshot = null;
+  closeEditor();
 }
 
 /* ---------------- 启动 ---------------- */
 
 function bindChrome() {
-  byId('btn-save').addEventListener('click', save);
-  byId('btn-reload').addEventListener('click', reloadFromDisk);
   byId('btn-theme').addEventListener('click', toggleTheme);
   const logoutButton = byId('btn-logout');
   logoutButton.appendChild(icon('logout'));
@@ -1582,6 +1899,7 @@ function bindChrome() {
     const key = activeFromHash();
     if (key === state.active) return;
     state.active = key;
+    closeEditor(false);
     renderNav();
     render();
   });
