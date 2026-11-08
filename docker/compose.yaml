@@ -1,6 +1,8 @@
 services:
   autofilm:
-    image: akimio/autofilm:latest
+    # 本仓库发布的镜像（GHCR）；latest 始终跟随最新正式版，
+    # 需要固定版本时改成 ghcr.io/zian-yan/autofilm:1.0.0 这类语义化版本标签。
+    image: ghcr.io/zian-yan/autofilm:latest
     container_name: autofilm
     restart: unless-stopped # 推荐加上：容器异常退出时自动重启
     volumes:

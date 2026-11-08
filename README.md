@@ -2,10 +2,10 @@
 [prs-badge]: https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square
 [issues]: https://github.com/AkimioJR/AutoFilm/issues/new
 [issues-badge]: https://img.shields.io/badge/Issues-welcome-brightgreen.svg?style=flat-square
-[release]: https://github.com/AkimioJR/AutoFilm/releases/latest
-[release-badge]: https://img.shields.io/github/v/release/AkimioJR/AutoFilm?style=flat-square
-[docker]: https://hub.docker.com/r/akimio/autofilm
-[docker-badge]: https://img.shields.io/docker/pulls/akimio/autofilm?color=%2348BB78&logo=docker&label=pulls
+[release]: https://github.com/zian-yan/AutoFilm/releases/latest
+[release-badge]: https://img.shields.io/github/v/release/zian-yan/AutoFilm?style=flat-square
+[docker]: https://github.com/zian-yan/AutoFilm/pkgs/container/autofilm
+[docker-badge]: https://img.shields.io/badge/GHCR-autofilm-2496ED?style=flat-square&logo=docker&logoColor=white
 
 <div align="center">
 
@@ -36,6 +36,8 @@
 # 运行方式
 1. Docker 运行（**推荐**）
    见[docker-compose.yaml](docker/compose.yaml)
+
+   镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 始终跟随最新正式版；需要固定版本时改用 `ghcr.io/zian-yan/autofilm:1.0.0` 这类语义化标签。
 
 2. 二进制运行
     ```bash

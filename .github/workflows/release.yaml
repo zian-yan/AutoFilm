@@ -1,22 +1,14 @@
 name: Build & Release
 
 on:
-  workflow_dispatch:
+  # 只由版本 tag 触发：main 分支的每次 push 都会产出滚动预发布，
+  # 既污染 Releases 列表又让人分不清哪个才是正式版。
+  # 日常提交由 Continuous Integration 负责编译与测试，这里只管发版。
   push:
-    branches:
-      - "main"
     tags:
       - "v*.*.*"
-    paths:
-      - ".github/workflows/release.yaml"
-      - ".github/workflows/build-binary.yaml"
-      - ".github/workflows/build-docker.yaml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/**"
-      - "alist-client-rs/**"
-      - "config/config.example.yaml"
-      - "docker/Dockerfile.ci"
+  # 手动触发仅用于重跑构建 / 补产物，不会创建 Release（Release 只认 tag）。
+  workflow_dispatch:
 
 jobs:
   build-binary:
@@ -39,9 +31,11 @@ jobs:
   github-release:
     name: Create GitHub Release
     needs: [build-binary, build-docker]
-    # Docker 镜像是附加产物：即使镜像环节失败（比如未配置 Docker Hub 凭据），
-    # 只要二进制构建成功就继续发布 Release，避免整条流水线因此中断。
-    if: ${{ always() && needs.build-binary.result == 'success' }}
+    # 两道门槛：
+    # 1. 必须是版本 tag 触发的运行 —— 手动触发只重跑构建，不产出 Release；
+    # 2. Docker 镜像是附加产物，即使镜像环节失败（比如未配置 Docker Hub 凭据），
+    #    只要二进制构建成功就继续发布 Release，避免整条流水线因此中断。
+    if: ${{ always() && needs.build-binary.result == 'success' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,20 +101,14 @@ jobs:
             popd > /dev/null
           done
 
-      # tag 触发时发布为 latest 版本；main 分支 push / 手动触发时发布为 pre-latest 版本
+      # 只有版本 tag 能走到这里（job 级 if 已过滤），因此 tag 名即发布名，
+      # 不再有滚动预发布这一分支。
       - name: Determine release tag
         id: release_tag
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag_name=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
-            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "tag_name=pre-release" >> "${GITHUB_OUTPUT}"
-            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
-          fi
+        run: echo "tag_name=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
 
       # 优先从 CHANGELOG.md 中提取当前发布版本的详细说明（严格过滤 --- 分割线及下方的比对链接）；
-      # 若为预发布（pre-release）或未在 CHANGELOG.md 找到对应章节，则回退为根据 Git 提交记录自动生成。
+      # 未找到对应章节时回退为根据 Git 提交记录自动生成。
       - name: Generate Release Body
         id: release_body
         run: |
@@ -128,25 +116,15 @@ jobs:
 
           TAG_NAME="${{ steps.release_tag.outputs.tag_name }}"
 
-          if [[ "${{ steps.release_tag.outputs.prerelease }}" == "true" ]]; then
-            COMPOSE_IMAGE_TAG="main"
-          else
-            COMPOSE_IMAGE_TAG="${TAG_NAME}"
-          fi
-
-          # 获取上一个版本 tag：tag 触发时排除当前版本，其余情况取最新版本 tag
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            PREVIOUS_TAG=$(git tag -l 'v*' --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n 1 || true)
-          else
-            PREVIOUS_TAG=$(git tag -l 'v*' --sort=-v:refname | head -n 1 || true)
-          fi
+          # 获取上一个版本 tag（排除当前版本）
+          PREVIOUS_TAG=$(git tag -l 'v*' --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n 1 || true)
           echo "Previous tag: ${PREVIOUS_TAG}"
 
           CHANGELOG=""
 
-          # 1. 正式版本发布时（非 pre-release），优先从 CHANGELOG.md 中提取对应版本的说明
+          # 1. 优先从 CHANGELOG.md 中提取当前版本的说明
           # 提取当前版本从 ## [版本] 开始，到下一个 ## [ 或 --- 分割线前的内容，避免将底部的比对链接引入 release body
-          if [[ "${{ steps.release_tag.outputs.prerelease }}" == "false" ]] && [ -f CHANGELOG.md ]; then
+          if [ -f CHANGELOG.md ]; then
             RAW_CHANGELOG=$(awk -v ver="${TAG_NAME#v}" '
               BEGIN { in_section = 0 }
               $0 ~ "^## \\[" {
@@ -167,7 +145,7 @@ jobs:
             fi
           fi
 
-          # 2. 如果未能从 CHANGELOG.md 中提取（例如滚动预发布 pre-release），则基于上一个 tag 到 HEAD 的提交记录自动分类生成
+          # 2. 如果未能从 CHANGELOG.md 中提取对应章节，则基于上一个 tag 到 HEAD 的提交记录自动分类生成
           if [ -z "$CHANGELOG" ]; then
             if [ -z "${PREVIOUS_TAG}" ]; then
               COMMITS=$(git log --pretty=format:"%s||%an" HEAD)
@@ -245,9 +223,19 @@ jobs:
             BODY="${BODY}**完整更新记录**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
           fi
 
-          # 添加 Docker compose.yaml 配置示例。预发布使用 main，正式发布使用对应的 v* tag。
-          COMPOSE_CONTENT=$(sed -E "s|(image:[[:space:]]+akimio/autofilm:)[^[:space:]#]+|\\1${COMPOSE_IMAGE_TAG}|" docker/compose.yaml)
-          BODY="${BODY}"$'\n\n### 🐳 Docker Compose 配置示例\n\n```yaml\n'"${COMPOSE_CONTENT}"$'\n```'
+          # 镜像标签说明与 compose 示例。
+          # compose.yaml 里已经写死 :latest（正式版通道），这里不再做 tag 替换——
+          # 之前的实现会把示例改写成 :main，用户照着复制会拉到一个分支开发镜像。
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          VERSION="${TAG_NAME#v}"
+          MINOR="${VERSION%.*}"
+          MAJOR="${MINOR%%.*}"
+
+          BODY="${BODY}"$'\n\n'"### 🐳 Docker 镜像"$'\n\n'
+          BODY="${BODY}本次发布 \`${IMAGE}:latest\`（始终指向最新正式版）。需要可复现部署时改用固定版本标签：\`${IMAGE}:${VERSION}\`、\`${IMAGE}:${MINOR}\`、\`${IMAGE}:${MAJOR}\`。"
+
+          COMPOSE_CONTENT=$(cat docker/compose.yaml)
+          BODY="${BODY}"$'\n\n'"### 📦 Docker Compose 配置示例"$'\n\n'"\`\`\`yaml"$'\n'"${COMPOSE_CONTENT}"$'\n'"\`\`\`"
 
           # 添加 config.yaml 配置示例
           CONFIG_CONTENT=$(cat config/config.example.yaml)
@@ -260,21 +248,13 @@ jobs:
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
-      # 保持所有预发布版本共用一个 tag，并将其移动到本次构建的提交。
-      # 正式版本由 v* tag 触发，不会执行该步骤。
-      - name: Update rolling pre-release tag
-        if: ${{ steps.release_tag.outputs.prerelease == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git tag --force pre-release "${GITHUB_SHA}"
-          git push --force origin refs/tags/pre-release
-
+      # 一律发布为正式版：不再维护滚动 pre-release 分支，
+      # Releases 列表里只会出现 v* 版本，不会有一堆 pre-release 干扰。
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_tag.outputs.tag_name }}
-          prerelease: ${{ steps.release_tag.outputs.prerelease }}
+          prerelease: false
           body: ${{ steps.release_body.outputs.body }}
           files: |
             dist/release/AutoFilm*
