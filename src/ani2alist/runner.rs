@@ -42,11 +42,7 @@ pub enum Error {
     #[error("request failed with status {status}: {url}")]
     HttpStatus { status: StatusCode, url: String },
     #[error("响应体积超过上限（{size} > {limit} 字节）: {url}")]
-    ResponseTooLarge {
-        size: u64,
-        limit: u64,
-        url: String,
-    },
+    ResponseTooLarge { size: u64, limit: u64, url: String },
 }
 
 #[derive(Debug)]

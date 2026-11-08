@@ -42,7 +42,10 @@ impl ProtectionManager {
         task_id: &str,
         config: &SmartProtectionConfig,
     ) -> Result<Self> {
-        let state_file = target_dir.join(format!(".autofilm_strm_{}.json", sanitize_state_id(task_id)));
+        let state_file = target_dir.join(format!(
+            ".autofilm_strm_{}.json",
+            sanitize_state_id(task_id)
+        ));
         let protected = load_state(&state_file).await.unwrap_or_default().protected;
         Ok(Self {
             target_dir,

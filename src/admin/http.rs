@@ -160,10 +160,7 @@ pub fn read_request(stream: &mut TcpStream, remote_addr: &str) -> io::Result<Opt
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     if content_length > MAX_BODY_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "请求体超过上限",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "请求体超过上限"));
     }
 
     let mut body = buffer[header_end + 4..].to_vec();
@@ -187,9 +184,7 @@ pub fn read_request(stream: &mut TcpStream, remote_addr: &str) -> io::Result<Opt
 
 /// 在缓冲区中查找头部结束位置（`\r\n\r\n` 的起始下标）。
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 fn status_text(status: u16) -> &'static str {

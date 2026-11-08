@@ -257,7 +257,14 @@ mod tests {
     fn local_path_converts_video_ext_to_strm() {
         let target_dir = Path::new("/media/ani");
         assert_eq!(
-            local_path("/ani/2026/01.mkv", "01.mkv", "/ani", target_dir, false, None),
+            local_path(
+                "/ani/2026/01.mkv",
+                "01.mkv",
+                "/ani",
+                target_dir,
+                false,
+                None
+            ),
             PathBuf::from("/media/ani/2026/01.strm")
         );
         assert_eq!(
@@ -306,7 +313,11 @@ mod tests {
             Some("/ani/../../etc"),
         );
 
-        assert!(path.starts_with(target_dir), "path escaped: {}", path.display());
+        assert!(
+            path.starts_with(target_dir),
+            "path escaped: {}",
+            path.display()
+        );
     }
 
     #[test]

@@ -87,7 +87,10 @@ impl<T: Persist> Store<T> {
 
     /// 读取当前配置版本号。
     pub fn version(&self) -> u64 {
-        self.state.read().unwrap_or_else(|err| err.into_inner()).version
+        self.state
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .version
     }
 
     /// 持久化并切换到新配置，成功后返回新版本号。
@@ -121,7 +124,11 @@ impl<T: Persist> Store<T> {
     /// 判断磁盘上的配置文件是否出现了尚未应用的改动。
     pub fn config_changed_on_disk(&self) -> bool {
         let current = file_mtime(&self.path);
-        let applied = self.state.read().unwrap_or_else(|err| err.into_inner()).applied_mtime;
+        let applied = self
+            .state
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .applied_mtime;
 
         match (current, applied) {
             (Some(current), Some(applied)) => current > applied,
@@ -145,7 +152,9 @@ pub type ConfigStore = Store<Config>;
 pub type WebStore = Store<WebConfig>;
 
 fn file_mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok().and_then(|meta| meta.modified().ok())
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
 }
 
 #[cfg(test)]
@@ -186,11 +195,12 @@ mod tests {
         assert!(!web_path.exists(), "保存业务配置不应创建 web.yaml");
 
         // 保存面板配置：只应写出 web.yaml。
-        let web_version = web.apply(WebConfig {
-            enable: true,
-            ..WebConfig::default()
-        })
-        .expect("web save");
+        let web_version = web
+            .apply(WebConfig {
+                enable: true,
+                ..WebConfig::default()
+            })
+            .expect("web save");
         assert_eq!(web_version, 2);
         assert_eq!(business.version(), 2, "保存面板配置不应刷新业务配置版本");
         assert!(web_path.exists());

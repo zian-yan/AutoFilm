@@ -297,7 +297,10 @@ fn is_http_url(value: &str) -> bool {
     reqwest::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
-fn validate_alist(items: &[alist::AlistConfig], issues: &mut Vec<ValidationIssue>) -> HashSet<String> {
+fn validate_alist(
+    items: &[alist::AlistConfig],
+    issues: &mut Vec<ValidationIssue>,
+) -> HashSet<String> {
     let mut ids = HashSet::new();
     for (index, item) in items.iter().enumerate() {
         let base = format!("alist[{index}]");
@@ -712,7 +715,10 @@ mod tests {
         let written = fs::read_to_string(&path).expect("skeleton should be written");
         assert!(written.contains("本文件允许为空"));
         assert_eq!(
-            Config::from_yaml(&written).expect("skeleton should parse").alist.len(),
+            Config::from_yaml(&written)
+                .expect("skeleton should parse")
+                .alist
+                .len(),
             0
         );
 
@@ -741,7 +747,10 @@ mod tests {
     #[test]
     fn example_config_passes_validation() {
         let issues = parse_example().validate();
-        assert!(issues.is_empty(), "example config should be valid: {issues:?}");
+        assert!(
+            issues.is_empty(),
+            "example config should be valid: {issues:?}"
+        );
     }
 
     #[test]
@@ -824,7 +833,10 @@ library_poster_tasks:
         parse_example().save(&config_path).unwrap();
         let written = fs::read_to_string(&config_path).unwrap();
 
-        assert!(!written.contains("web:"), "业务配置不应包含 web 分区:\n{written}");
+        assert!(
+            !written.contains("web:"),
+            "业务配置不应包含 web 分区:\n{written}"
+        );
 
         fs::remove_dir_all(config_path.parent().unwrap()).ok();
     }

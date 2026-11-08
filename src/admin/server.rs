@@ -138,7 +138,11 @@ fn try_reserve(active: &AtomicUsize) -> bool {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, peer: SocketAddr, ctx: &AdminContext) -> io::Result<()> {
+fn handle_connection(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    ctx: &AdminContext,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
 

@@ -305,7 +305,10 @@ impl Alist2Strm {
                                 path = %full_path,
                                 "收集 BDMV 主片候选文件"
                             );
-                            bdmv_collections.entry(root).or_default().push((full_path, object));
+                            bdmv_collections
+                                .entry(root)
+                                .or_default()
+                                .push((full_path, object));
                             RunStats::inc(&context.stats.bdmv_collection_count);
                         }
                     }
@@ -467,7 +470,12 @@ impl Alist2Strm {
             fs::create_dir_all(parent).await?;
         }
 
-        let url = download_url(&context.server_url, &context.base_path, full_path, &object.sign);
+        let url = download_url(
+            &context.server_url,
+            &context.base_path,
+            full_path,
+            &object.sign,
+        );
         if local_path.extension().and_then(|ext| ext.to_str()) == Some("strm") {
             let existed_before = fs::try_exists(&local_path).await?;
             // 视频文件写入 .strm 内容；伴生文件则直接下载到本地。
@@ -588,7 +596,11 @@ impl Alist2Strm {
             collect_local_files(&self.config.target_dir, self.config.flatten_mode).await?;
         let mut files_to_delete = all_local_files
             .difference(&processed_local_paths)
-            .filter(|path| !excluded_prefixes.iter().any(|prefix| path.starts_with(prefix)))
+            .filter(|path| {
+                !excluded_prefixes
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix))
+            })
             .cloned()
             .collect::<HashSet<_>>();
 
@@ -673,7 +685,9 @@ impl Alist2Strm {
     /// 该函数把任务级别的 `source_dir`、`target_dir`、`flatten_mode` 和 BDMV
     /// 特殊规则传给路径规则，得到最终要写入或下载的本地文件位置。
     fn local_path(&self, full_path: &str, name: &str) -> PathBuf {
-        let bdmv_root = is_bdmv_file(full_path, name).then(|| bdmv_root(full_path)).flatten();
+        let bdmv_root = is_bdmv_file(full_path, name)
+            .then(|| bdmv_root(full_path))
+            .flatten();
         path::local_path(
             full_path,
             name,

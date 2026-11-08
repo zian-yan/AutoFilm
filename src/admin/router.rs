@@ -4,8 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     admin::{
-        APPLY_TIMEOUT, AdminCommand, AdminContext, ApplyOutcome, ReloadSource,
-        assets,
+        APPLY_TIMEOUT, AdminCommand, AdminContext, ApplyOutcome, ReloadSource, assets,
         http::{Request, Response},
     },
     config::Config,
@@ -21,10 +20,7 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; st
 pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
     if ctx.auth.enabled() {
         if let Some(remaining) = ctx.guard.locked_remaining(&request.remote_addr) {
-            return Response::text(
-                429,
-                format!("认证失败次数过多，请在 {remaining} 秒后重试"),
-            );
+            return Response::text(429, format!("认证失败次数过多，请在 {remaining} 秒后重试"));
         }
 
         if !ctx.auth.verify(request.header("authorization")) {
@@ -52,12 +48,12 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
 
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => page(assets::INDEX_HTML),
-        ("GET", "/assets/app.css") => Response::new(200, "text/css; charset=utf-8", assets::APP_CSS),
-        ("GET", "/assets/app.js") => Response::new(
-            200,
-            "application/javascript; charset=utf-8",
-            assets::APP_JS,
-        ),
+        ("GET", "/assets/app.css") => {
+            Response::new(200, "text/css; charset=utf-8", assets::APP_CSS)
+        }
+        ("GET", "/assets/app.js") => {
+            Response::new(200, "application/javascript; charset=utf-8", assets::APP_JS)
+        }
         ("GET", "/favicon.ico") => Response::empty(204),
         ("GET", "/api/state") => state_handler(ctx),
         ("GET", "/api/config.yaml") => config_yaml_handler(ctx),
@@ -311,10 +307,7 @@ fn finish(receiver: std_mpsc::Receiver<ApplyOutcome>, label: &str) -> Response {
     let outcome = match receiver.recv_timeout(APPLY_TIMEOUT) {
         Ok(outcome) => outcome,
         Err(std_mpsc::RecvTimeoutError::Timeout) => {
-            return Response::text(
-                503,
-                format!("等待{label}生效超时，请稍后刷新面板确认结果"),
-            );
+            return Response::text(503, format!("等待{label}生效超时，请稍后刷新面板确认结果"));
         }
         Err(std_mpsc::RecvTimeoutError::Disconnected) => {
             return Response::text(500, format!("等待{label}应用结果失败"));
@@ -326,10 +319,7 @@ fn finish(receiver: std_mpsc::Receiver<ApplyOutcome>, label: &str) -> Response {
             let message = if report.scope == "web" {
                 "面板配置已保存，重启进程后生效".to_string()
             } else {
-                format!(
-                    "配置已保存并生效，共 {} 个调度任务",
-                    report.scheduled_count
-                )
+                format!("配置已保存并生效，共 {} 个调度任务", report.scheduled_count)
             };
             Response::json(
                 200,

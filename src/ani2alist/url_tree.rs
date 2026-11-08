@@ -295,13 +295,18 @@ mod tests {
         assert_eq!(structure.lines().count(), 2, "structure: {structure}");
         assert!(structure.contains("evil_fake.mp4_9_9_https"), "{structure}");
         assert!(!structure.contains("https://attacker/x"), "{structure}");
-        assert!(structure.contains("https://example.com/ab.mp4"), "{structure}");
+        assert!(
+            structure.contains("https://example.com/ab.mp4"),
+            "{structure}"
+        );
     }
 
     #[test]
     fn ignores_paths_deeper_than_the_limit() {
         let mut tree = Tree::new();
-        let deep = (0..MAX_DEPTH + 10).map(|i| format!("d{i}")).collect::<Vec<_>>();
+        let deep = (0..MAX_DEPTH + 10)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>();
         tree.upsert_path(
             &deep,
             FileEntry {

@@ -398,8 +398,7 @@ fn decode_image(bytes: &[u8]) -> std::result::Result<DynamicImage, image::ImageE
     limits.max_image_height = Some(MAX_IMAGE_SIDE);
     limits.max_alloc = Some(MAX_IMAGE_ALLOC);
 
-    let mut reader =
-        image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     reader.limits(limits);
     reader.decode()
 }

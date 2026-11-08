@@ -20,11 +20,7 @@ pub enum Error {
     #[error("download failed with status {status}: {url}")]
     DownloadStatus { status: StatusCode, url: String },
     #[error("下载体积超过上限（{size} > {limit} 字节）: {url}")]
-    DownloadTooLarge {
-        size: u64,
-        limit: u64,
-        url: String,
-    },
+    DownloadTooLarge { size: u64, limit: u64, url: String },
     #[error("计算出的本地路径不在目标目录内: {path}")]
     UnsafeLocalPath { path: PathBuf },
 }
