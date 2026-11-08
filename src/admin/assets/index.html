@@ -1,52 +1,49 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="dark light" />
   <title>AutoFilm 控制台</title>
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
 <body>
-  <div class="app">
-    <aside class="sidebar">
+  <header class="topbar">
+    <div class="topbar-inner">
       <div class="brand">
-        <span class="brand-mark">AF</span>
+        <span class="brand-mark" aria-hidden="true">AF</span>
         <span class="brand-text">
           <strong>AutoFilm</strong>
           <small>管理控制台</small>
         </span>
       </div>
       <nav id="nav" class="nav" aria-label="配置分区"></nav>
-      <div class="sidebar-foot">
-        <span id="app-version" class="muted">-</span>
-        <a class="sidebar-link" href="/api/config.yaml" target="_blank" rel="noopener">业务 YAML</a>
-        <a class="sidebar-link" href="/api/web.yaml" target="_blank" rel="noopener">面板 YAML</a>
+      <div class="topbar-right">
+        <span id="app-version" class="version">-</span>
+        <button id="btn-logout" class="btn btn-icon is-hidden" type="button" aria-label="退出登录"></button>
+        <button id="btn-theme" class="btn btn-icon" type="button" aria-label="切换主题"></button>
       </div>
-    </aside>
+    </div>
+  </header>
 
-    <main class="main">
-      <header class="topbar">
-        <div class="topbar-title">
-          <h1 id="section-title">总览</h1>
-          <p id="section-subtitle" class="muted"></p>
-        </div>
-        <div class="topbar-actions">
-          <span id="dirty-pill" class="pill pill-warn is-hidden">未保存</span>
-          <button id="btn-reload" class="btn btn-ghost" type="button">重新加载文件</button>
-          <button id="btn-save" class="btn btn-primary" type="button">保存并应用</button>
-        </div>
-      </header>
+  <main class="main">
+    <div class="page-head">
+      <div>
+        <h1 id="section-title">总览</h1>
+        <p id="section-subtitle" class="muted"></p>
+      </div>
+      <div class="page-actions">
+        <span id="dirty-pill" class="pill pill-warn is-hidden">未保存</span>
+        <button id="btn-reload" class="btn btn-ghost" type="button">重新加载</button>
+        <button id="btn-save" class="btn btn-primary" type="button">保存并应用</button>
+      </div>
+    </div>
 
-      <div id="alert" class="alert is-hidden" role="alert"></div>
-      <div id="content" class="content"></div>
+    <div id="alert" class="alert is-hidden" role="alert"></div>
+    <div id="content" class="content"></div>
 
-      <footer class="footer">
-        <span class="muted">业务配置保存后立即生效；面板配置需重启进程</span>
-        <span id="runtime-line" class="muted"></span>
-      </footer>
-    </main>
-  </div>
+    <footer id="runtime-line" class="footer"></footer>
+  </main>
 
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
   <script src="/assets/app.js"></script>

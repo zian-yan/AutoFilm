@@ -7,6 +7,9 @@ pub enum Error {
     #[error("媒体服务器 URL 无效: {0}")]
     InvalidUrl(String),
 
+    #[error("媒体服务器 {id} 的 API Key 含有无法写入 MediaBrowser 认证头的字符")]
+    InvalidApiKey { id: String },
+
     #[error("创建媒体服务器 HTTP 客户端失败: {0}")]
     BuildClient(#[source] reqwest::Error),
 

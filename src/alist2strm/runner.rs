@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     alist2strm::{
-        config::{Config, SmartProtectionConfig},
+        config::{Config, GlobalConfig, SmartProtectionConfig},
         errors::{Error, Result},
         path::{self, bdmv_root, download_url, is_bdmv_file, join_alist_path, suffix_of},
         protection::ProtectionManager,
@@ -42,6 +42,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone)]
 pub struct Alist2Strm {
     config: Config,
+    /// 全局并发 / 下载 / 同步策略，对所有同步任务共用。
+    settings: GlobalConfig,
     client: Arc<Client>,
     server_url: String,
 }
@@ -76,11 +78,17 @@ enum PathDecision {
 impl Alist2Strm {
     /// 创建一个 Alist2Strm 任务执行器。
     ///
-    /// 执行器保存任务配置和共享的 AList 客户端；真正的扫描和本地文件处理
-    /// 发生在 `run` 中。
-    pub fn new(config: Config, client: Arc<Client>, server_url: String) -> Self {
+    /// 执行器保存任务配置、全局设置和共享的 AList 客户端；真正的扫描和本地
+    /// 文件处理发生在 `run` 中。
+    pub fn new(
+        config: Config,
+        settings: GlobalConfig,
+        client: Arc<Client>,
+        server_url: String,
+    ) -> Self {
         Self {
             config,
+            settings,
             client,
             server_url,
         }
@@ -194,7 +202,7 @@ impl Alist2Strm {
             .collect::<HashSet<_>>();
         process_exts.extend(download_exts.iter().cloned());
         let sync_ignore_pattern = self
-            .config
+            .settings
             .sync
             .as_ref()
             .and_then(|sync| sync.ignore.as_deref())
@@ -210,7 +218,7 @@ impl Alist2Strm {
                 .build()?,
             server_url: self.server_url.clone(),
             base_path: me.base_path,
-            download_semaphore: Arc::new(Semaphore::new(self.config.download.concurrency.max(1))),
+            download_semaphore: Arc::new(Semaphore::new(self.settings.download.concurrency.max(1))),
             download_exts,
             process_exts,
             sync_ignore_pattern,
@@ -232,7 +240,7 @@ impl Alist2Strm {
     ) -> Result<()> {
         // 使用显式栈递归遍历，避免深层目录导致函数递归过深。
         let mut stack = vec![self.config.source_dir.clone()];
-        let concurrency = self.config.concurrency.max(1);
+        let concurrency = self.settings.concurrency.max(1);
         let mut pending = FuturesUnordered::new();
 
         while let Some(dir_path) = stack.pop() {
@@ -409,7 +417,7 @@ impl Alist2Strm {
     ) -> Result<()> {
         // 用 bounded concurrency 限制并发处理数量，避免压垮 AList 或本地 IO。
         futures_util::stream::iter(files)
-            .for_each_concurrent(self.config.concurrency.max(1), |(full_path, object)| {
+            .for_each_concurrent(self.settings.concurrency.max(1), |(full_path, object)| {
                 let context = context.clone();
                 self.process_path_logged(context, full_path, object)
             })
@@ -703,22 +711,22 @@ impl Alist2Strm {
     /// 未启用下载或平铺模式下不会下载伴生文件；否则会根据 subtitle/image/nfo
     /// 开关和 `other_ext` 合并出需要额外下载的扩展名。
     fn download_exts(&self) -> HashSet<String> {
-        if !self.config.download.enable || self.config.flatten_mode {
+        if !self.settings.download.enable || self.config.flatten_mode {
             return HashSet::new();
         }
 
         let mut exts = HashSet::new();
-        if self.config.download.subtitle {
+        if self.settings.download.subtitle {
             exts.extend(SUBTITLE_EXTS.iter().map(|ext| ext.to_string()));
         }
-        if self.config.download.image {
+        if self.settings.download.image {
             exts.extend(IMAGE_EXTS.iter().map(|ext| ext.to_string()));
         }
-        if self.config.download.nfo {
+        if self.settings.download.nfo {
             exts.extend(NFO_EXTS.iter().map(|ext| ext.to_string()));
         }
         exts.extend(
-            self.config
+            self.settings
                 .download
                 .other_ext
                 .iter()
@@ -732,7 +740,7 @@ impl Alist2Strm {
     /// 只有配置中存在 `sync` 且 `enabled=true` 时，任务结束后才会删除本地过期
     /// 文件。
     fn sync_enabled(&self) -> bool {
-        self.config.sync.as_ref().is_some_and(|sync| sync.enabled)
+        self.settings.sync.as_ref().is_some_and(|sync| sync.enabled)
     }
 
     /// 返回启用状态下的智能删除保护配置。
@@ -740,7 +748,7 @@ impl Alist2Strm {
     /// 该配置用于防止远端扫描失败导致本地媒体库被误清空；保护范围覆盖全部
     /// 同步产生的文件，而不只是 `.strm`。
     fn sync_smart_protection(&self) -> Option<&SmartProtectionConfig> {
-        self.config
+        self.settings
             .sync
             .as_ref()
             .and_then(|sync| sync.smart_protection.as_ref())
@@ -795,9 +803,13 @@ mod tests {
             target_dir,
             flatten_mode: true,
             overwrite: true,
-            download: Default::default(),
-            sync: None,
+        }
+    }
+
+    fn test_settings() -> GlobalConfig {
+        GlobalConfig {
             concurrency: 1,
+            ..GlobalConfig::default()
         }
     }
 
@@ -848,6 +860,7 @@ mod tests {
 
         let runner = Alist2Strm::new(
             test_config(target_dir.clone()),
+            test_settings(),
             Arc::new(
                 Client::new("http://127.0.0.1:5244")
                     .unwrap()

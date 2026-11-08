@@ -34,6 +34,11 @@ impl TaskRunGuard {
                 running: self.running.clone(),
             })
     }
+
+    /// 当前是否有实例正在运行（面板据此展示「运行中」）。
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
 }
 
 /// 执行权凭据，离开作用域时自动释放。
@@ -59,6 +64,19 @@ pub fn shared_guard(key: &str) -> Arc<TaskRunGuard> {
     let registry = RUN_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut registry = registry.lock().unwrap_or_else(|err| err.into_inner());
     registry.entry(key.to_string()).or_default().clone()
+}
+
+/// 列出当前正在运行的任务键（`模块:任务 ID`），供面板展示运行状态。
+pub fn running_keys() -> Vec<String> {
+    let registry = RUN_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
+    let registry = registry.lock().unwrap_or_else(|err| err.into_inner());
+    let mut keys: Vec<String> = registry
+        .iter()
+        .filter(|(_, guard)| guard.is_running())
+        .map(|(key, _)| key.clone())
+        .collect();
+    keys.sort();
+    keys
 }
 
 pub async fn create_alist_clients(

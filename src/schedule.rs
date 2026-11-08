@@ -1,8 +1,15 @@
 mod utils;
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use croner::parser::{CronParser, Seconds};
 use tokio_cron_scheduler::{Job, JobScheduler, JobSchedulerError};
 use tracing::{debug, error, info, warn};
 
@@ -10,11 +17,101 @@ use crate::{
     alist2strm::Alist2Strm, ani2alist::Ani2Alist, config::Config, library_poster::LibraryPoster,
 };
 
-pub async fn create_scheduler(
-    config: Config,
-    tz: Tz,
-) -> Result<(JobScheduler, usize), JobSchedulerError> {
+/// Alist2Strm 任务的模块名，同时用作面板接口的 `module` 参数。
+pub const MODULE_ALIST2STRM: &str = "alist2strm";
+/// Ani2Alist 任务的模块名。
+pub const MODULE_ANI2ALIST: &str = "ani2alist";
+/// LibraryPoster 任务的模块名。
+pub const MODULE_LIBRARY_POSTER: &str = "library_poster";
+
+/// 一次任务运行的未来类型。
+///
+/// 定时触发（调度器回调）与手动触发（面板按钮）共用同一个入口，因此这里把
+/// 签名单一化成「无返回值的可发送 future」，具体结果全部写进日志。
+pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// 任务执行入口。
+pub type RunFn = Arc<dyn Fn() -> RunFuture + Send + Sync>;
+
+/// 一个可在面板上手动触发的任务。
+#[derive(Clone)]
+pub struct RegisteredTask {
+    pub module: &'static str,
+    pub id: String,
+    pub run: RunFn,
+}
+
+/// 本次调度器构建出的全部可执行任务，键为 `模块:任务 ID`。
+///
+/// 每个任务的执行入口与调度器回调共享同一份闭包，因此「立即运行」与 cron
+/// 触发走的是完全相同的代码路径——包括任务级互斥闸门与日志。
+#[derive(Clone, Default)]
+pub struct RunRegistry {
+    tasks: Arc<Mutex<HashMap<String, RegisteredTask>>>,
+}
+
+impl RunRegistry {
+    fn key(module: &str, id: &str) -> String {
+        format!("{module}:{id}")
+    }
+
+    fn insert(&self, task: RegisteredTask) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        tasks.insert(Self::key(task.module, &task.id), task);
+    }
+
+    /// 取出指定任务的执行入口。
+    pub fn get(&self, module: &str, id: &str) -> Option<RegisteredTask> {
+        let tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        tasks.get(&Self::key(module, id)).cloned()
+    }
+
+    /// 取出某个模块下的全部任务。
+    pub fn by_module(&self, module: &str) -> Vec<RegisteredTask> {
+        let tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        tasks
+            .values()
+            .filter(|task| task.module == module)
+            .cloned()
+            .collect()
+    }
+}
+
+/// 计算某个 cron 表达式在给定时区下的下次运行时间。
+///
+/// 解析参数与 `tokio-cron-scheduler` 内部保持一致（秒必填、日与周同时生效），
+/// 面板展示的时间因此与调度器实际触发时间一致；表达式非法时返回 `None`，
+/// 由校验阶段提示用户修正。
+pub fn next_run_at(cron: &str, tz: Tz) -> Option<DateTime<Tz>> {
+    let schedule = CronParser::builder()
+        .seconds(Seconds::Required)
+        .dom_and_dow(true)
+        .build()
+        .parse(cron)
+        .ok()?;
+    let now = Utc::now().with_timezone(&tz);
+    schedule.find_next_occurrence(&now, false).ok()
+}
+
+/// 当前正在运行的任务键集合（`模块:任务 ID`）。
+pub fn running_tasks() -> Vec<String> {
+    utils::running_keys()
+}
+
+/// 一次调度器构建的产物。
+///
+/// 除调度器本身外，还把「可手动触发的任务入口」与「已登录的 AList 客户端」
+/// 一并交给面板：前者用于立即运行，后者用于在编辑配置时浏览远端目录。
+pub struct Scheduled {
+    pub scheduler: JobScheduler,
+    pub scheduled_count: usize,
+    pub runners: RunRegistry,
+    pub alist_clients: HashMap<String, (Arc<alist::Client>, String)>,
+}
+
+pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSchedulerError> {
     let scheduler = JobScheduler::new().await?;
+    let registry = RunRegistry::default();
     let mut scheduled_count = 0usize;
 
     // key是AList客户端ID，value是(Client, 服务器URL)二元组
@@ -22,14 +119,12 @@ pub async fn create_scheduler(
     let media_server_clients = utils::create_media_server_clients(&config.media_servers);
 
     let mut alist2strm_scheduled_count = 0usize;
+    // 全局并发 / 下载 / 同步策略对所有同步任务共用，先克隆一份供每个 runner 持有。
+    let alist2strm_settings = config.alist2strm.clone();
     for task in config.alist2strm_tasks {
         let task_id = task.id.clone();
-        let Some(cron) = task.cron.clone() else {
-            warn!(task_id = %task_id, "Alist2Strm 任务缺少 cron，已跳过");
-            continue;
-        };
+        let cron = task.cron.clone();
 
-        info!(task_id = %task_id, cron = %cron, "添加 Alist2Strm 定时任务");
         let Some((client, server_url)) = alist_clients.get(&task.alist) else {
             error!(
                 task_id = %task_id,
@@ -39,6 +134,10 @@ pub async fn create_scheduler(
             continue;
         };
 
+        if cron.is_none() {
+            warn!(task_id = %task_id, "Alist2Strm 任务未设置 cron，只能手动运行");
+        }
+
         debug!(
             task_id = %task_id,
             alist = %task.alist,
@@ -47,18 +146,26 @@ pub async fn create_scheduler(
             "成功解析 Alist2Strm 任务配置"
         );
 
-        let runner = Arc::new(Alist2Strm::new(task, client.clone(), server_url.clone()));
-        let guard = utils::shared_guard(&format!("alist2strm:{task_id}"));
-        scheduler
-            .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
+        let runner = Arc::new(Alist2Strm::new(
+            task,
+            alist2strm_settings.clone(),
+            client.clone(),
+            server_url.clone(),
+        ));
+        let guard = utils::shared_guard(&format!("{MODULE_ALIST2STRM}:{task_id}"));
+        let run: RunFn = {
+            let runner = runner.clone();
+            let guard = guard.clone();
+            let task_id = task_id.clone();
+            Arc::new(move || {
                 let runner = runner.clone();
-                let task_id = task_id.clone();
                 let guard = guard.clone();
+                let task_id = task_id.clone();
                 Box::pin(async move {
                     let Some(_slot) = guard.try_acquire() else {
                         warn!(
                             task_id = %task_id,
-                            "上一次 Alist2Strm 任务仍在运行，跳过本次调度"
+                            "上一次 Alist2Strm 任务仍在运行，跳过本次执行"
                         );
                         return;
                     };
@@ -96,10 +203,23 @@ pub async fn create_scheduler(
                         }
                     }
                 })
-            })?)
-            .await?;
-        alist2strm_scheduled_count += 1;
-        scheduled_count += 1;
+            })
+        };
+
+        registry.insert(RegisteredTask {
+            module: MODULE_ALIST2STRM,
+            id: task_id.clone(),
+            run: run.clone(),
+        });
+
+        if let Some(cron) = cron {
+            info!(task_id = %task_id, cron = %cron, "添加 Alist2Strm 定时任务");
+            scheduler
+                .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| run())?)
+                .await?;
+            alist2strm_scheduled_count += 1;
+            scheduled_count += 1;
+        }
     }
 
     info!(
@@ -111,12 +231,8 @@ pub async fn create_scheduler(
     let mut ani2alist_scheduled_count = 0usize;
     for task in config.ani2alist_tasks {
         let task_id = task.id.clone();
-        let Some(cron) = task.cron.clone() else {
-            warn!(task_id = %task_id, "Ani2Alist 任务缺少 cron，已跳过");
-            continue;
-        };
+        let cron = task.cron.clone();
 
-        info!(task_id = %task_id, cron = %cron, "添加 Ani2Alist 定时任务");
         let Some((client, _server_url)) = alist_clients.get(&task.alist) else {
             error!(
                 task_id = %task_id,
@@ -126,6 +242,10 @@ pub async fn create_scheduler(
             continue;
         };
 
+        if cron.is_none() {
+            warn!(task_id = %task_id, "Ani2Alist 任务未设置 cron，只能手动运行");
+        }
+
         debug!(
             task_id = %task_id,
             alist = %task.alist,
@@ -134,17 +254,20 @@ pub async fn create_scheduler(
         );
 
         let runner = Arc::new(Ani2Alist::new(task, client.clone(), tz));
-        let guard = utils::shared_guard(&format!("ani2alist:{task_id}"));
-        scheduler
-            .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
+        let guard = utils::shared_guard(&format!("{MODULE_ANI2ALIST}:{task_id}"));
+        let run: RunFn = {
+            let runner = runner.clone();
+            let guard = guard.clone();
+            let task_id = task_id.clone();
+            Arc::new(move || {
                 let runner = runner.clone();
-                let task_id = task_id.clone();
                 let guard = guard.clone();
+                let task_id = task_id.clone();
                 Box::pin(async move {
                     let Some(_slot) = guard.try_acquire() else {
                         warn!(
                             task_id = %task_id,
-                            "上一次 Ani2Alist 任务仍在运行，跳过本次调度"
+                            "上一次 Ani2Alist 任务仍在运行，跳过本次执行"
                         );
                         return;
                     };
@@ -158,10 +281,23 @@ pub async fn create_scheduler(
                         }
                     }
                 })
-            })?)
-            .await?;
-        ani2alist_scheduled_count += 1;
-        scheduled_count += 1;
+            })
+        };
+
+        registry.insert(RegisteredTask {
+            module: MODULE_ANI2ALIST,
+            id: task_id.clone(),
+            run: run.clone(),
+        });
+
+        if let Some(cron) = cron {
+            info!(task_id = %task_id, cron = %cron, "添加 Ani2Alist 定时任务");
+            scheduler
+                .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| run())?)
+                .await?;
+            ani2alist_scheduled_count += 1;
+            scheduled_count += 1;
+        }
     }
 
     info!(
@@ -173,10 +309,8 @@ pub async fn create_scheduler(
     let mut library_poster_scheduled_count = 0usize;
     for task in config.library_poster_tasks {
         let task_id = task.id.clone();
-        let Some(cron) = task.cron.clone() else {
-            warn!(task_id = %task_id, "LibraryPoster 任务缺少 cron，已跳过");
-            continue;
-        };
+        let cron = task.cron.clone();
+
         let Some(client) = media_server_clients.get(&task.server) else {
             error!(
                 task_id = %task_id,
@@ -197,18 +331,24 @@ pub async fn create_scheduler(
             }
         };
 
-        info!(task_id = %task_id, cron = %cron, "添加 LibraryPoster 定时任务");
-        let guard = utils::shared_guard(&format!("library_poster:{task_id}"));
-        scheduler
-            .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| {
+        if cron.is_none() {
+            warn!(task_id = %task_id, "LibraryPoster 任务未设置 cron，只能手动运行");
+        }
+
+        let guard = utils::shared_guard(&format!("{MODULE_LIBRARY_POSTER}:{task_id}"));
+        let run: RunFn = {
+            let runner = runner.clone();
+            let guard = guard.clone();
+            let task_id = task_id.clone();
+            Arc::new(move || {
                 let runner = runner.clone();
-                let task_id = task_id.clone();
                 let guard = guard.clone();
+                let task_id = task_id.clone();
                 Box::pin(async move {
                     let Some(_slot) = guard.try_acquire() else {
                         warn!(
                             task_id = %task_id,
-                            "上一次 LibraryPoster 任务仍在运行，跳过本次调度"
+                            "上一次 LibraryPoster 任务仍在运行，跳过本次执行"
                         );
                         return;
                     };
@@ -236,10 +376,23 @@ pub async fn create_scheduler(
                         }
                     }
                 })
-            })?)
-            .await?;
-        library_poster_scheduled_count += 1;
-        scheduled_count += 1;
+            })
+        };
+
+        registry.insert(RegisteredTask {
+            module: MODULE_LIBRARY_POSTER,
+            id: task_id.clone(),
+            run: run.clone(),
+        });
+
+        if let Some(cron) = cron {
+            info!(task_id = %task_id, cron = %cron, "添加 LibraryPoster 定时任务");
+            scheduler
+                .add(Job::new_async_tz(cron, tz, move |_uuid, _lock| run())?)
+                .await?;
+            library_poster_scheduled_count += 1;
+            scheduled_count += 1;
+        }
     }
 
     info!(
@@ -249,5 +402,48 @@ pub async fn create_scheduler(
     );
     info!(scheduled_count, "全部子任务调度完成");
 
-    Ok((scheduler, scheduled_count))
+    Ok(Scheduled {
+        scheduler,
+        scheduled_count,
+        runners: registry,
+        alist_clients,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noop_task(module: &'static str, id: &str) -> RegisteredTask {
+        RegisteredTask {
+            module,
+            id: id.to_string(),
+            run: Arc::new(|| Box::pin(async {})),
+        }
+    }
+
+    #[test]
+    fn registry_isolates_modules_with_same_id() {
+        let registry = RunRegistry::default();
+        registry.insert(noop_task(MODULE_ALIST2STRM, "国产剧"));
+        registry.insert(noop_task(MODULE_ANI2ALIST, "国产剧"));
+
+        assert!(registry.get(MODULE_ALIST2STRM, "国产剧").is_some());
+        assert!(registry.get(MODULE_ANI2ALIST, "国产剧").is_some());
+        assert!(registry.get(MODULE_LIBRARY_POSTER, "国产剧").is_none());
+        assert_eq!(registry.by_module(MODULE_ALIST2STRM).len(), 1);
+    }
+
+    #[test]
+    fn next_run_matches_six_field_cron() {
+        let tz = chrono_tz::Asia::Shanghai;
+        let next = next_run_at("0 0 20 * * *", tz).expect("合法的 6 段 cron 应能算出下次运行");
+        assert_eq!(next.timezone(), tz);
+        assert_eq!(next.format("%M:%S").to_string(), "00:00");
+    }
+
+    #[test]
+    fn next_run_returns_none_for_invalid_cron() {
+        assert!(next_run_at("这不是 cron", chrono_tz::Asia::Shanghai).is_none());
+    }
 }

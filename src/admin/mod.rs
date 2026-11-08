@@ -121,9 +121,19 @@ pub struct AdminContext {
     pub web_store: Arc<WebStore>,
     pub auth: AuthConfig,
     pub guard: auth::LoginGuard,
+    /// 登录页签发/校验的会话表（仅存内存，重启即失效）。
+    pub sessions: auth::SessionStore,
     pub schema: serde_json::Value,
     pub commands: mpsc::Sender<AdminCommand>,
     pub status: Mutex<RuntimeStatus>,
+    /// 当前调度器构建出的任务执行入口，供面板「立即运行」使用。
+    pub runners: Mutex<schedule::RunRegistry>,
+    /// 当前已登录的 AList 客户端，供面板在编辑配置时浏览远端目录。
+    pub alist_clients: Mutex<std::collections::HashMap<String, (Arc<alist::Client>, String)>>,
+    /// 调度时区，用于计算面板展示的「下次运行」时间。
+    pub tz: chrono_tz::Tz,
+    /// 运行时句柄：手动触发的任务交给 tokio 运行时执行，不占用 HTTP 连接线程。
+    pub handle: tokio::runtime::Handle,
     pub config_path: PathBuf,
     pub web_config_path: PathBuf,
     /// 启动时实际生效的监听地址（面板配置改动后需重启才会变化）。
@@ -143,6 +153,62 @@ impl AdminContext {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         serde_json::to_value(status).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// 每个任务的下次运行时间，键为 `模块:任务 ID`。
+    ///
+    /// 解析规则与调度器一致（秒必填、日与周同时生效、使用配置时区），因此面板
+    /// 展示的时间就是调度器真正触发的时间；cron 缺失或非法时不返回该键。
+    pub fn next_runs_json(&self) -> serde_json::Value {
+        let config = self.store.snapshot().config;
+        let mut entries: Vec<(String, Option<String>)> = Vec::new();
+
+        for task in &config.alist2strm_tasks {
+            entries.push((
+                format!("{}:{}", schedule::MODULE_ALIST2STRM, task.id),
+                task.cron.clone(),
+            ));
+        }
+        for task in &config.ani2alist_tasks {
+            entries.push((
+                format!("{}:{}", schedule::MODULE_ANI2ALIST, task.id),
+                task.cron.clone(),
+            ));
+        }
+        for task in &config.library_poster_tasks {
+            entries.push((
+                format!("{}:{}", schedule::MODULE_LIBRARY_POSTER, task.id),
+                task.cron.clone(),
+            ));
+        }
+
+        let mut map = serde_json::Map::new();
+        for (key, cron) in entries {
+            let Some(cron) = cron else { continue };
+            let Some(next) = schedule::next_run_at(&cron, self.tz) else {
+                continue;
+            };
+            map.insert(
+                key,
+                serde_json::Value::String(next.format("%Y-%m-%d %H:%M:%S").to_string()),
+            );
+        }
+        serde_json::Value::Object(map)
+    }
+
+    /// 正在运行的任务键集合，供面板展示「运行中」并禁用重复触发。
+    pub fn running_json(&self) -> serde_json::Value {
+        serde_json::to_value(schedule::running_tasks()).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// 面板需要的运行时数据（状态 + 下次运行 + 运行中），供轮询接口与首屏复用。
+    pub fn runtime_json(&self) -> serde_json::Value {
+        let mut runtime = self.status_json();
+        if let serde_json::Value::Object(map) = &mut runtime {
+            map.insert("next_runs".to_string(), self.next_runs_json());
+            map.insert("running".to_string(), self.running_json());
+        }
+        runtime
     }
 }
 
@@ -185,9 +251,11 @@ impl Runtime {
         web_config: WebConfig,
         tz: chrono_tz::Tz,
     ) -> Result<(Self, usize), String> {
-        let (mut scheduler, scheduled_count) = schedule::create_scheduler(config.clone(), tz)
+        let scheduled = schedule::create_scheduler(config.clone(), tz)
             .await
             .map_err(|err| format!("初始化调度器失败: {err}"))?;
+        let (mut scheduler, scheduled_count) = (scheduled.scheduler, scheduled.scheduled_count);
+        let (runners, alist_clients) = (scheduled.runners, scheduled.alist_clients);
         scheduler
             .start()
             .await
@@ -202,12 +270,17 @@ impl Runtime {
             web_store,
             auth: AuthConfig::new(web_config.username.clone(), web_config.password.clone()),
             guard: auth::LoginGuard::default(),
+            sessions: auth::SessionStore::new(),
             schema: schema::schema(),
             commands: command_tx,
             status: Mutex::new(RuntimeStatus {
                 scheduled_count,
                 ..RuntimeStatus::default()
             }),
+            runners: Mutex::new(runners),
+            alist_clients: Mutex::new(alist_clients),
+            tz,
+            handle: tokio::runtime::Handle::current(),
             config_path,
             web_config_path,
             listen: web_config.listen.clone(),
@@ -342,15 +415,16 @@ async fn apply(
         return ApplyOutcome::Rejected(issues);
     }
 
-    let (mut scheduler, scheduled_count) =
-        match schedule::create_scheduler(config.clone(), tz).await {
-            Ok(result) => result,
-            Err(err) => {
-                let message = format!("构建调度任务失败: {err}");
-                record_failure(ctx, message.clone(), source);
-                return ApplyOutcome::Failed(message);
-            }
-        };
+    let scheduled = match schedule::create_scheduler(config.clone(), tz).await {
+        Ok(result) => result,
+        Err(err) => {
+            let message = format!("构建调度任务失败: {err}");
+            record_failure(ctx, message.clone(), source);
+            return ApplyOutcome::Failed(message);
+        }
+    };
+    let (mut scheduler, scheduled_count) = (scheduled.scheduler, scheduled.scheduled_count);
+    let (runners_next, alist_clients_next) = (scheduled.runners, scheduled.alist_clients);
 
     if let Err(err) = scheduler.start().await {
         let message = format!("启动新调度器失败: {err}");
@@ -380,6 +454,20 @@ async fn apply(
         if let Err(err) = previous_scheduler.shutdown().await {
             warn!(error = %err, "关闭旧调度器时出错");
         }
+    }
+
+    // 手动运行入口与 AList 客户端同步替换，避免面板触发到已经下线的旧任务，
+    // 或按旧凭据浏览目录。
+    {
+        let mut registry = ctx.runners.lock().unwrap_or_else(|err| err.into_inner());
+        *registry = runners_next;
+    }
+    {
+        let mut clients = ctx
+            .alist_clients
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *clients = alist_clients_next;
     }
 
     let report = ApplyReport {

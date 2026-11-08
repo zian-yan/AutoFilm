@@ -30,9 +30,9 @@ const DEFAULT_WEB_SKELETON: &str = "\
 enable: false
 # 监听地址，必须是 ip:port；监听非回环地址时必须设置密码，否则进程拒绝启动。
 listen: 127.0.0.1:8080
-# HTTP Basic 认证用户名（设置密码时必填）。
+# 登录页用户名（设置密码时必填）。
 username: \"\"
-# HTTP Basic 认证密码；留空表示不认证，此时只允许监听回环地址。
+# 登录页密码；留空表示不启用登录页，此时只允许监听回环地址。
 password: \"\"
 # 是否监听配置文件的外部改动并自动热重载（2 秒轮询，同时监听 config.yaml 与 web.yaml）。
 watch_file: true
@@ -47,10 +47,10 @@ pub struct WebConfig {
     // 面板监听地址，必须是 ip:port 形式。
     #[serde(default = "default_web_listen")]
     pub listen: String,
-    // HTTP Basic 认证用户名。
+    // 登录页用户名。
     #[serde(default)]
     pub username: String,
-    // HTTP Basic 认证密码；留空表示不做认证（仅允许监听回环地址）。
+    // 登录页密码；留空表示不启用登录页（仅允许监听回环地址）。
     #[serde(default)]
     pub password: String,
     // 是否监听配置文件的外部改动并自动热重载。

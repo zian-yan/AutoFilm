@@ -72,6 +72,11 @@ impl Response {
         Self::new(status, "text/plain; charset=utf-8", Vec::new())
     }
 
+    /// 302 跳转；未登录访问页面时用来转到登录页。
+    pub fn redirect(location: impl Into<String>) -> Self {
+        Self::new(302, "text/plain; charset=utf-8", Vec::new()).with_header("Location", location)
+    }
+
     /// 追加一个响应头。
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
@@ -190,7 +195,10 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 fn status_text(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
         204 => "No Content",
+        302 => "Found",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",

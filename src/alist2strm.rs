@@ -6,6 +6,6 @@ mod runner;
 mod summary;
 mod utils;
 
-pub use config::Config;
+pub use config::{Config, GlobalConfig};
 pub(crate) use errors::Result;
 pub use runner::Alist2Strm;

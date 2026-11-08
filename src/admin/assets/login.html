@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="robots" content="noindex" />
+  <title>登录 · AutoFilm</title>
+  <link rel="stylesheet" href="/assets/login.css" />
+</head>
+<body>
+  <main class="login-stage">
+    <form id="login-form" class="login-card" novalidate>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">AF</span>
+        <span class="brand-text">
+          <strong>AutoFilm</strong>
+          <small>管理控制台</small>
+        </span>
+      </div>
+
+      <label class="field">
+        <span class="field-label">用户名</span>
+        <input id="username" name="username" type="text" autocomplete="username"
+               spellcheck="false" autocapitalize="off" required />
+      </label>
+
+      <label class="field">
+        <span class="field-label">密码</span>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+      </label>
+
+      <p id="login-error" class="error is-hidden" role="alert"></p>
+
+      <button id="submit" class="btn-submit" type="submit">登录</button>
+      <p class="foot">凭据保存在 <code>web.yaml</code> 的 <code>username</code> / <code>password</code>。</p>
+    </form>
+  </main>
+  <script src="/assets/login.js"></script>
+</body>
+</html>

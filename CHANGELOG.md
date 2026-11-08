@@ -7,6 +7,26 @@
 
 > 本仓库从 `v1.0.0` 起重置版本号，作为独立发布线的起点；此前上游（AkimioJR/AutoFilm）的历史版本请查阅 Git 提交记录与上游 Release。
 
+## [1.1.0] - 2026-11-08
+
+### ⚠️ 破坏性变更
+
+- **[Alist2Strm]**: 并发数、伴生文件下载与同步删除策略从「每个任务」上移为全局配置段 `alist2strm`（`concurrency` / `download.*` / `sync.*`）。`alist2strm_tasks` 中的同名键会被忽略，启动时打印迁移警告。
+  > **迁移说明**：把任务里原先的 `concurrency`、`download`、`sync` 三段整体移到根级 `alist2strm` 下，再从各任务中删除。
+
+### 新增
+
+- **面板**: 任务列表改为表格（任务名 / 存储 / 路径 / 定时 / 下次运行 / 操作），点「编辑」才展开完整表单；新增「立即运行」与「运行所有」，与 cron 触发共用同一执行入口并带任务级互斥；新增 `POST /api/run`、`POST /api/run-all`、`GET /api/runtime`。
+- **面板**: 配色对齐 Jellyfin（`#00A4DC` / `#AA5CC3`），提供深色与浅色双主题（跟随系统 + 手动切换 + `?theme=` 强制），图标全部自绘；导航与地址栏 hash 同步。
+- **面板**: 新增「同步全局设置」分区，集中编辑 `alist2strm` 全局段。
+- **面板**: 编辑任务的「扫描目录」/「挂载路径」时点「浏览」即可从 AList 已有目录中直接选择（新增 `POST /api/browse`，复用已登录的 AList 客户端，10 秒超时）。
+- **面板**: 新增独立登录页 `/login`（替代浏览器原生 Basic 弹窗）：未登录页面 302 跳转、接口 401，新增 `POST /api/login` / `POST /api/logout`；会话为内存中的随机 token（12 小时滑动过期、上限 128），Cookie 设置 `HttpOnly` + `SameSite=Strict`，右上角提供退出登录，脚本仍可用 HTTP Basic 访问接口。
+
+### 变更
+
+- **[LibraryPoster]**: 媒体服务器认证按 `kind` 分流——Jellyfin 改用 `Authorization: MediaBrowser Token="..."`，兼容 12.0 起默认禁用 `X-Emby-Token` / `?api_key=` 的行为，且向下兼容 10.8+；Emby 保持原有认证方式。Jellyfin 的 API Key 新增字符校验（面板保存与客户端创建时均会拦截含引号、空格等值）。
+- **面板**: 移除侧栏的「业务 YAML / 面板 YAML」直链（接口仍保留，只是不再在页面上展示）。
+
 ## [1.0.0] - 2026-11-08
 
 首个独立发布版本。相较上游基线，本版本补齐了 Web 管理面板、配置热重载与一整套安全加固，并把面板配置从业务配置中彻底拆分出来。

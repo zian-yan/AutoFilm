@@ -52,12 +52,31 @@ pub struct Config {
     pub flatten_mode: bool,
     #[serde(default)]
     pub overwrite: bool,
+}
+
+/// Alist2Strm 全局设置。
+///
+/// 并发、伴生文件下载与同步删除策略对所有同步任务共用一份：这些选项通常是
+/// 「这台机器 / 这个 AList 能承受多少」的运行参数，而不是每个任务各不相同的
+/// 业务属性，放在任务里只会被反复抄写。任务本身因此只描述「扫哪里、写到哪里」。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobalConfig {
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
     #[serde(default)]
     pub download: DownloadOption,
     #[serde(default)]
     pub sync: Option<SyncConfig>,
-    #[serde(default = "default_concurrency")]
-    pub concurrency: usize,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: default_concurrency(),
+            download: DownloadOption::default(),
+            sync: None,
+        }
+    }
 }
 
 /// 返回默认的普通文件处理并发数。

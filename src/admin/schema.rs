@@ -15,6 +15,15 @@ pub fn schema() -> Value {
                 "item_label": "AList 客户端",
                 "addable": true,
                 "removable": true,
+                // 列表页的摘要列：前端按这些列渲染表格，编辑后才展开完整表单。
+                "table": {
+                    "columns": [
+                        { "key": "id", "label": "存储名" },
+                        { "key": "base_url", "label": "地址" },
+                        { "key": "public_url", "label": "公共地址" },
+                        { "key": "username", "label": "账号" }
+                    ]
+                },
                 "fields": [
                     { "key": "id", "label": "标识 ID", "kind": "text", "required": true, "placeholder": "我的Alist", "help": "任务通过该 ID 引用本客户端，需全局唯一" },
                     { "key": "base_url", "label": "服务器地址", "kind": "text", "required": true, "placeholder": "http://alist:5244", "help": "AList 或 OpenList 的访问地址" },
@@ -43,6 +52,14 @@ pub fn schema() -> Value {
                 "item_label": "媒体服务器",
                 "addable": true,
                 "removable": true,
+                "table": {
+                    "columns": [
+                        { "key": "id", "label": "名称" },
+                        { "key": "kind", "label": "类型", "kind": "map", "map": { "jellyfin": "Jellyfin", "emby": "Emby" } },
+                        { "key": "base_url", "label": "地址" },
+                        { "key": "timeout", "label": "超时（秒）" }
+                    ]
+                },
                 "fields": [
                     { "key": "id", "label": "标识 ID", "kind": "text", "required": true, "placeholder": "我的Jellyfin" },
                     { "key": "kind", "label": "服务器类型", "kind": "select", "required": true, "options": [
@@ -64,32 +81,54 @@ pub fn schema() -> Value {
                 }
             },
             {
-                "key": "alist2strm_tasks",
-                "title": "Alist2Strm 任务",
-                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件，并可按需下载字幕、图片与 NFO",
-                "item_label": "同步任务",
-                "addable": true,
-                "removable": true,
+                "key": "alist2strm",
+                "title": "同步全局设置",
+                "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效",
+                "item_label": "全局设置",
+                "single": true,
+                "addable": false,
+                "removable": false,
                 "fields": [
-                    { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "动漫", "help": "用于日志与智能保护状态文件，需唯一" },
-                    { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 0 20 * * *", "help": "6 段：秒 分 时 日 月 周；留空表示不参与调度" },
-                    { "key": "alist", "label": "AList 客户端", "kind": "select", "required": true, "options_from": "alist" },
-                    { "key": "source_dir", "label": "扫描目录", "kind": "text", "required": true, "placeholder": "/ani", "help": "AList 上的绝对路径" },
-                    { "key": "target_dir", "label": "输出目录", "kind": "text", "required": true, "placeholder": "/media/ani", "help": "本地 .strm 与伴生文件输出位置" },
-                    { "key": "flatten_mode", "label": "平铺模式", "kind": "bool", "help": "所有 .strm 输出到同一级目录，且不下载伴生文件" },
-                    { "key": "overwrite", "label": "覆盖已存在文件", "kind": "bool" },
-                    { "key": "concurrency", "label": "并发数", "kind": "number", "min": 1, "max": 1024, "step": 1 },
-                    { "key": "download.enable", "label": "下载伴生文件", "kind": "bool" },
+                    { "key": "concurrency", "label": "并发数", "kind": "number", "min": 1, "max": 1024, "step": 1, "help": "同时处理的文件数量上限，可减轻运行设备与 AList 负载" },
+                    { "key": "download.enable", "label": "下载伴生文件", "kind": "bool", "help": "字幕、图片、NFO 与自定义后缀；平铺模式下始终不下载" },
                     { "key": "download.subtitle", "label": "下载字幕", "kind": "bool", "help": ".ass / .srt / .ssa / .sub" },
-                    { "key": "download.image", "label": "下载图片", "kind": "bool" },
+                    { "key": "download.image", "label": "下载图片", "kind": "bool", "help": ".png / .jpg" },
                     { "key": "download.nfo", "label": "下载 NFO", "kind": "bool" },
                     { "key": "download.other_ext", "label": "自定义后缀", "kind": "list", "placeholder": ".zip, .md", "help": "逗号分隔的自定义下载后缀" },
                     { "key": "download.concurrency", "label": "下载并发数", "kind": "number", "min": 1, "max": 256, "step": 1 },
-                    { "key": "sync.enabled", "label": "同步删除", "kind": "bool", "help": "远端已不存在的本地文件会被清理" },
+                    { "key": "sync.enabled", "label": "同步删除", "kind": "bool", "help": "远端已不存在的本地文件会被清理；扫描失败的目录自动排除" },
                     { "key": "sync.ignore", "label": "删除忽略正则", "kind": "text", "nullable": true, "placeholder": "\\.(nfo|jpg)$", "help": "仅匹配文件名" },
                     { "key": "sync.smart_protection.enabled", "label": "智能删除保护", "kind": "bool", "help": "大量删除前先进入宽限确认" },
                     { "key": "sync.smart_protection.threshold", "label": "删除阈值", "kind": "number", "min": 1, "step": 1 },
                     { "key": "sync.smart_protection.grace_scans", "label": "宽限扫描次数", "kind": "number", "min": 1, "step": 1 }
+                ]
+            },
+            {
+                "key": "alist2strm_tasks",
+                "title": "Alist2Strm 任务",
+                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在「同步全局设置」里统一配置",
+                "item_label": "同步任务",
+                "addable": true,
+                "removable": true,
+                // 该分区支持「立即运行」，module 与后端任务执行入口的模块名一致。
+                "module": "alist2strm",
+                "next_run": true,
+                "table": {
+                    "columns": [
+                        { "key": "id", "label": "任务名" },
+                        { "key": "alist", "label": "存储", "kind": "ref" },
+                        { "key": "source_dir", "label": "路径" },
+                        { "key": "cron", "label": "定时", "kind": "cron" }
+                    ]
+                },
+                "fields": [
+                    { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "动漫", "help": "用于日志与智能保护状态文件，需唯一" },
+                    { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 0 20 * * *", "help": "6 段：秒 分 时 日 月 周；留空表示不参与调度" },
+                    { "key": "alist", "label": "AList 客户端", "kind": "select", "required": true, "options_from": "alist" },
+                    { "key": "source_dir", "label": "扫描目录", "kind": "alist_path", "required": true, "placeholder": "/ani", "alist_ref": "alist", "help": "点「浏览」直接从 AList 已有目录中选择" },
+                    { "key": "target_dir", "label": "输出目录", "kind": "text", "required": true, "placeholder": "/media/ani", "help": "本地 .strm 与伴生文件输出位置" },
+                    { "key": "flatten_mode", "label": "平铺模式", "kind": "bool", "help": "所有 .strm 输出到同一级目录，且不下载伴生文件" },
+                    { "key": "overwrite", "label": "覆盖已存在文件", "kind": "bool" }
                 ],
                 "template": {
                     "id": "",
@@ -98,25 +137,7 @@ pub fn schema() -> Value {
                     "source_dir": "/",
                     "target_dir": "/media/",
                     "flatten_mode": false,
-                    "overwrite": false,
-                    "concurrency": 50,
-                    "download": {
-                        "enable": false,
-                        "subtitle": false,
-                        "image": false,
-                        "nfo": false,
-                        "other_ext": [],
-                        "concurrency": 5
-                    },
-                    "sync": {
-                        "enabled": false,
-                        "ignore": null,
-                        "smart_protection": {
-                            "enabled": false,
-                            "threshold": 100,
-                            "grace_scans": 3
-                        }
-                    }
+                    "overwrite": false
                 }
             },
             {
@@ -126,11 +147,22 @@ pub fn schema() -> Value {
                 "item_label": "追番任务",
                 "addable": true,
                 "removable": true,
+                "module": "ani2alist",
+                "next_run": true,
+                "table": {
+                    "columns": [
+                        { "key": "id", "label": "任务名" },
+                        { "key": "alist", "label": "存储", "kind": "ref" },
+                        { "key": "target_dir", "label": "挂载路径" },
+                        { "key": "update.mode", "label": "更新模式", "kind": "map", "map": { "rss": "RSS 追更", "latest": "当前季度", "keyword": "自定义关键字" } },
+                        { "key": "cron", "label": "定时", "kind": "cron" }
+                    ]
+                },
                 "fields": [
                     { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "新番追更" },
                     { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 20 12 * * *" },
                     { "key": "alist", "label": "AList 客户端", "kind": "select", "required": true, "options_from": "alist", "help": "需要管理员权限的 AList 客户端" },
-                    { "key": "target_dir", "label": "挂载路径", "kind": "text", "required": true, "placeholder": "/Anime", "help": "UrlTree 存储器挂载路径，不存在时自动创建" },
+                    { "key": "target_dir", "label": "挂载路径", "kind": "alist_path", "required": true, "placeholder": "/Anime", "alist_ref": "alist", "help": "UrlTree 存储器挂载路径，不存在时自动创建；可点「浏览」参考已有目录" },
                     { "key": "source.source_url", "label": "目录数据源", "kind": "text", "required": true, "placeholder": "https://aniopen.an-i.workers.dev" },
                     { "key": "source.rss_url", "label": "RSS 地址", "kind": "text", "required": true, "placeholder": "https://api.ani.rip/ani-download.xml" },
                     { "key": "update.mode", "label": "更新模式", "kind": "select", "required": true, "options": [
@@ -160,6 +192,17 @@ pub fn schema() -> Value {
                 "item_label": "海报任务",
                 "addable": true,
                 "removable": true,
+                "module": "library_poster",
+                "next_run": true,
+                "table": {
+                    "columns": [
+                        { "key": "id", "label": "任务名" },
+                        { "key": "server", "label": "媒体服务器", "kind": "ref" },
+                        { "key": "upload", "label": "上传", "kind": "bool" },
+                        { "key": "libraries", "label": "媒体库", "kind": "count" },
+                        { "key": "cron", "label": "定时", "kind": "cron" }
+                    ]
+                },
                 "fields": [
                     { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "媒体库海报" },
                     { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 50 13 * * *" },
@@ -214,8 +257,8 @@ pub fn schema() -> Value {
             "fields": [
                 { "key": "enable", "label": "启用 Web 面板", "kind": "bool", "help": "关闭后重启将不再提供面板" },
                 { "key": "listen", "label": "监听地址", "kind": "text", "required": true, "placeholder": "127.0.0.1:8080", "help": "必须为 ip:port；非回环地址必须设置密码" },
-                { "key": "username", "label": "用户名", "kind": "text", "help": "HTTP Basic 认证用户名" },
-                { "key": "password", "label": "密码", "kind": "secret", "help": "留空表示保持原密码不变；密码为空时仅允许监听回环地址" },
+                { "key": "username", "label": "用户名", "kind": "text", "help": "登录页的用户名" },
+                { "key": "password", "label": "密码", "kind": "secret", "help": "登录页的密码，留空表示保持原密码不变；密码为空时不启用登录页，仅允许监听回环地址" },
                 { "key": "watch_file", "label": "监听配置文件改动", "kind": "bool", "help": "手工编辑 YAML 后自动触发重载（同时监听 config.yaml 与 web.yaml）" }
             ]
         },

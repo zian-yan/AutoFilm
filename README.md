@@ -37,7 +37,7 @@
 1. Docker 运行（**推荐**）
    见[docker-compose.yaml](docker/compose.yaml)
 
-   镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 始终跟随最新正式版；需要固定版本时改用 `ghcr.io/zian-yan/autofilm:1.0.0` 这类语义化标签。
+   镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 始终跟随最新正式版；需要固定版本时改用 `ghcr.io/zian-yan/autofilm:1.1.0` 这类语义化标签。
 
 2. 二进制运行
     ```bash
@@ -50,11 +50,49 @@
 | 文件 | 默认路径 | 职责 | 生效方式 |
 | --- | --- | --- | --- |
 | 业务配置 | `config/config.yaml` | AList 客户端、媒体服务器、同步 / 追番 / 海报任务 | 保存后热重载调度器 |
-| 面板配置 | `config/web.yaml` | 面板监听地址、HTTP Basic 认证、文件监听开关 | 保存后需重启进程 |
+| 面板配置 | `config/web.yaml` | 面板监听地址、登录凭据、文件监听开关 | 保存后需重启进程 |
 
 两份文件各自读写、各自持有版本号：面板保存业务配置**不会**重写 `web.yaml`，反之亦然，不存在谁覆盖谁的问题。结构参考 [`config/config.example.yaml`](./config/config.example.yaml) 与 [`config/web.example.yaml`](./config/web.example.yaml)。
 
 **两份配置都允许为空**（文件不存在、只有注释、或显式 `null` 均可）：程序按各自的默认值启动，不会报错，方便在初始化阶段先建目录、之后再通过面板或手工编辑逐步补齐。业务配置缺失时会补一份仅含注释的骨架文件，面板配置缺失时会写入默认值；解析失败（例如 YAML 语法错误）仍然会报错，避免静默忽略改坏的配置。
+
+### Alist2Strm 全局设置
+
+`alist2strm` 是一段**全局**配置，所有同步任务共用，任务里不再单独写这些选项：
+
+```yaml
+alist2strm:
+  concurrency: 50            # 同时处理的文件数量上限
+  download:                  # 伴生文件下载（平铺模式下始终不下载）
+    enable: true
+    subtitle: true
+    image: true
+    nfo: true
+    other_ext: [".zip", ".md"]
+    concurrency: 5           # 同时下载伴生文件的数量上限
+  sync:                      # 同步删除
+    enabled: true
+    ignore: "\\.(nfo|jpg)$"  # 仅匹配文件名
+    smart_protection:
+      enabled: true
+      threshold: 100
+      grace_scans: 3
+```
+
+任务本身只描述「扫哪里、写到哪里」：
+
+```yaml
+alist2strm_tasks:
+  - id: 动漫
+    cron: 0 0 20 * * *
+    alist: 我的Alist
+    source_dir: /ani
+    target_dir: /media/ani
+    flatten_mode: false
+    overwrite: false
+```
+
+> **从旧版本升级**：如果 `alist2strm_tasks` 里还留着 `concurrency` / `download` / `sync`，这些键会被忽略（启动时打印一条警告），请把对应取值搬到根级 `alist2strm` 段。
 
 # Web 管理面板
 
@@ -65,18 +103,30 @@
 ```yaml
 enable: true                      # 启用面板
 listen: 127.0.0.1:8080            # 必须为 ip:port；非回环地址必须设置密码
-username: admin                   # HTTP Basic 认证用户名
-password: "your-password"         # 留空表示不认证（此时仅允许监听回环地址）
+username: admin                   # 登录页用户名
+password: "your-password"         # 留空表示不启用登录（此时仅允许监听回环地址）
 watch_file: true                  # 监听 config.yaml / web.yaml 外部改动并自动重载
 ```
 
-启动后访问 `http://127.0.0.1:8080`，浏览器会弹出 HTTP Basic 登录框。
+启动后访问 `http://127.0.0.1:8080`，会先显示 `/login` 登录页；未登录时页面请求 302 到登录页、接口请求返回 401（前端会自动跳转）。登录成功后后端下发 `HttpOnly; SameSite=Strict` 的会话 Cookie，12 小时无操作自动失效，右上角可点「退出登录」。自动化脚本仍可直接带 HTTP Basic 凭据访问接口。
 
 > **注意**：监听非回环地址却没有设置 `password` 时，进程会在启动阶段直接报错退出，不会以「无认证」状态对外提供服务。面板接口会返回 AList 令牌与媒体服务器 API Key，请勿直接暴露到公网；如需远程访问，建议前置反向代理并启用 HTTPS。
 
 ## 配置数据结构与校验规则
 
-面板按 `alist`、`media_servers`、`alist2strm_tasks`、`ani2alist_tasks`、`library_poster_tasks` 五个业务分区渲染表单，另有独立的「Web 面板」分区用于编辑 `web.yaml`。字段结构由 `/api/state` 下发的 schema（`sections` + `web_section`）描述，与 Rust 结构体（`src/config.rs`、`src/web_config.rs` 及各子模块 `config.rs`）保持同一套命名。
+面板的列表型分区（`alist`、`media_servers`、`alist2strm_tasks`、`ani2alist_tasks`、`library_poster_tasks`）默认以表格展示摘要列（任务名 / 存储 / 路径 / 定时 / 下次运行），点行尾的「编辑」才展开完整表单，「删除」也放在展开区与行尾操作列中；另有独立的「Web 面板」分区用于编辑 `web.yaml`。字段结构由 `/api/state` 下发的 schema（`sections` + `web_section`，列表页的摘要列由各分区的 `table.columns` 描述）定义，与 Rust 结构体（`src/config.rs`、`src/web_config.rs` 及各子模块 `config.rs`）保持同一套命名。
+
+有 cron 的任务都会在表格里显示「下次运行」——由后端用与调度器相同的解析参数（秒必填、日与周同时生效、使用配置时区）计算，与真正触发时间一致。
+
+编辑任务时，「扫描目录」（以及追番任务的「挂载路径」）右侧有 **浏览** 按钮：后端复用调度器里已登录的 AList 客户端实时列出目录（`POST /api/browse`，请求体 `{"alist":"客户端 ID","path":"/目录"}`，超时 10 秒），点选即可填入，不必手打路径；输入框仍可直接编辑，用于填写 AList 上尚未创建的目录。
+
+### 立即运行
+
+任务行尾的播放按钮与分区右上角的「运行所有」分别调用 `POST /api/run`、`POST /api/run-all`（请求体 `{"module":"alist2strm","id":"动漫"}`）。手动触发与 cron 触发**共用同一个执行入口**，因此：
+
+- 未设置 cron 的任务同样可以手动运行；
+- 同一任务不会并发执行，已有实例在跑时本次触发会被跳过（日志有 `跳过本次执行` 记录）；
+- 运行状态通过 `GET /api/runtime` 轮询展示（`running` 为 `模块:任务 ID` 列表）。
 
 保存前会做完整静态校验，**任何一处不通过都不会写盘**：
 
@@ -110,7 +160,7 @@ Cron 表达式的语法细节由调度器二次校验：构建调度任务失败
 
 ## 权限控制与反馈
 
-- HTTP Basic 认证，凭据比较为定长比较；连续 8 次失败后按来源 IP 锁定 60 秒；
+- 登录页 + 内存会话（随机 32 字节 token，`HttpOnly` / `SameSite=Strict` / 12 小时滑动过期），兼容 HTTP Basic；凭据比较为定长比较，连续 8 次失败后按来源 IP 锁定 60 秒；
 - 变更类请求必须携带 `X-AutoFilm-Request: 1` 自定义头，配合 `Content-Security-Policy` 同源限制阻断 CSRF；
 - 密码不会回传到前端（`/api/state`、`/api/config.yaml`、`/api/web.yaml` 均已脱敏），留空提交表示保持原密码；
 - 保存成功：右上角提示版本号、调度任务数与耗时；校验失败：按 `section[index].field` 精确定位到输入框并列出全部问题；版本冲突（其他会话已修改）返回 409 并提示重新加载。
@@ -139,6 +189,8 @@ Cron 表达式的语法细节由调度器二次校验：构建调度任务失败
 
 视觉设计参考了[HappyQuQu/jellyfin-library-poster](https://github.com/HappyQuQu/jellyfin-library-poster)和[MoviePilot-Plugins/mediacovergenerator](https://github.com/justzerock/MoviePilot-Plugins/tree/main/plugins.v2/mediacovergenerator)，
 图像处理流程由 AutoFilm 使用 Rust 重新实现。
+
+> **兼容性**：支持 Jellyfin 10.8+（含 12.x）与 Emby。Jellyfin 12 起服务器默认禁用 `X-Emby-Token` 与 `?api_key=`，本工具改用 `Authorization: MediaBrowser Token="..."` 认证；Jellyfin 的 API Key 请保持为字母、数字、`-`、`_`、`.`，不要包含空格或引号。
 
 <table width="100%">
   <tr>

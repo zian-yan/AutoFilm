@@ -77,6 +77,11 @@ pub struct Config {
     // Rust 版统一使用 snake_case 根字段；旧 Python 平铺配置不再兼容。
     #[serde(default)]
     pub alist: Vec<alist::AlistConfig>,
+    /// Alist2Strm 全局设置：并发、伴生文件下载、同步删除策略。
+    ///
+    /// 这些选项对所有同步任务共用一份，任务里不再重复配置。
+    #[serde(default)]
+    pub alist2strm: alist2strm::GlobalConfig,
     #[serde(default)]
     pub alist2strm_tasks: Vec<alist2strm::Config>,
     #[serde(default)]
@@ -124,6 +129,7 @@ impl Config {
 
         let value: serde_yaml::Value = serde_yaml::from_str(text)?;
         warn_legacy_web_section(&value);
+        warn_legacy_alist2strm_fields(&value);
         let parsed: Option<Config> = serde_yaml::from_value(value)?;
         Ok(parsed.unwrap_or_default())
     }
@@ -156,6 +162,7 @@ impl Config {
 
         let alist_ids = validate_alist(&self.alist, &mut issues);
         let media_server_ids = validate_media_servers(&self.media_servers, &mut issues);
+        validate_alist2strm_global(&self.alist2strm, &mut issues);
         validate_alist2strm(&self.alist2strm_tasks, &alist_ids, &mut issues);
         validate_ani2alist(&self.ani2alist_tasks, &alist_ids, &mut issues);
         validate_library_poster(&self.library_poster_tasks, &media_server_ids, &mut issues);
@@ -187,6 +194,35 @@ fn warn_legacy_web_section(value: &serde_yaml::Value) {
             "业务配置中仍存在 `web:` 分区，该分区已拆分到独立的 web.yaml，本次将被忽略；\
              请把该段内容迁移到 web.yaml 后从业务配置中删除"
         );
+    }
+}
+
+/// 提示旧版把并发 / 下载 / 同步选项写在单个任务里的用户迁移到全局配置。
+///
+/// 这些字段已经从任务结构体上移到根级 `alist2strm`，任务里的同名键会被 serde
+/// 直接忽略；不提示的话用户会以为改动生效了（实际用的是全局默认值）。
+fn warn_legacy_alist2strm_fields(value: &serde_yaml::Value) {
+    let Some(tasks) = value
+        .get("alist2strm_tasks")
+        .and_then(|tasks| tasks.as_sequence())
+    else {
+        return;
+    };
+
+    for (index, task) in tasks.iter().enumerate() {
+        let Some(map) = task.as_mapping() else {
+            continue;
+        };
+        for key in ["concurrency", "download", "sync"] {
+            if map.contains_key(serde_yaml::Value::String(key.to_string())) {
+                warn!(
+                    index,
+                    field = key,
+                    "alist2strm_tasks 中仍存在任务级 `{key}` 配置，该选项已迁移到全局 \
+                     `alist2strm` 段，本次将被忽略；请把该值移到全局配置后从任务中删除"
+                );
+            }
+        }
     }
 }
 
@@ -387,6 +423,13 @@ fn validate_media_servers(
                 format!("{base}.api_key"),
                 "API Key 不能为空",
             ));
+        } else if item.kind == media_server::Kind::Jellyfin
+            && !media_server::is_safe_api_key(&item.api_key)
+        {
+            issues.push(ValidationIssue::new(
+                format!("{base}.api_key"),
+                "Jellyfin API Key 只能包含字母、数字、-、_、.（认证头不支持引号、逗号或空格）",
+            ));
         }
         if item.timeout == 0 {
             issues.push(ValidationIssue::new(
@@ -433,35 +476,44 @@ fn validate_alist2strm(
                 "输出目录不能为空",
             ));
         }
-        if !(1..=1024).contains(&item.concurrency) {
+    }
+}
+
+/// 校验 Alist2Strm 的全局设置（并发与同步删除阈值）。
+fn validate_alist2strm_global(
+    global: &alist2strm::GlobalConfig,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    const BASE: &str = "alist2strm";
+
+    if !(1..=1024).contains(&global.concurrency) {
+        issues.push(ValidationIssue::new(
+            format!("{BASE}.concurrency"),
+            "并发数需在 1 - 1024 之间",
+        ));
+    }
+    if !(1..=256).contains(&global.download.concurrency) {
+        issues.push(ValidationIssue::new(
+            format!("{BASE}.download.concurrency"),
+            "下载并发数需在 1 - 256 之间",
+        ));
+    }
+    if let Some(protection) = global
+        .sync
+        .as_ref()
+        .and_then(|sync| sync.smart_protection.as_ref())
+    {
+        if protection.enabled && protection.threshold == 0 {
             issues.push(ValidationIssue::new(
-                format!("{base}.concurrency"),
-                "并发数需在 1 - 1024 之间",
+                format!("{BASE}.sync.smart_protection.threshold"),
+                "删除阈值必须大于 0",
             ));
         }
-        if !(1..=256).contains(&item.download.concurrency) {
+        if protection.enabled && protection.grace_scans == 0 {
             issues.push(ValidationIssue::new(
-                format!("{base}.download.concurrency"),
-                "下载并发数需在 1 - 256 之间",
+                format!("{BASE}.sync.smart_protection.grace_scans"),
+                "宽限扫描次数必须大于 0",
             ));
-        }
-        if let Some(protection) = item
-            .sync
-            .as_ref()
-            .and_then(|sync| sync.smart_protection.as_ref())
-        {
-            if protection.enabled && protection.threshold == 0 {
-                issues.push(ValidationIssue::new(
-                    format!("{base}.sync.smart_protection.threshold"),
-                    "删除阈值必须大于 0",
-                ));
-            }
-            if protection.enabled && protection.grace_scans == 0 {
-                issues.push(ValidationIssue::new(
-                    format!("{base}.sync.smart_protection.grace_scans"),
-                    "宽限扫描次数必须大于 0",
-                ));
-            }
         }
     }
 }
@@ -666,19 +718,22 @@ mod tests {
         assert_eq!(config.alist[0].base_url, "http://alist:5244");
         assert_eq!(config.alist[0].wait_time, 0.0);
         assert_eq!(config.alist2strm_tasks[0].alist, "我的Alist");
-        assert!(!config.alist2strm_tasks[0].download.enable);
-        assert_eq!(config.alist2strm_tasks[0].download.concurrency, 5);
-        assert!(config.alist2strm_tasks[1].download.enable);
-        assert!(config.alist2strm_tasks[1].download.subtitle);
+        assert_eq!(config.alist2strm_tasks[0].source_dir, "/ani");
+        // 并发 / 下载 / 同步已上移到全局设置，任务里不再有这些字段。
+        assert_eq!(config.alist2strm.concurrency, 50);
+        assert!(!config.alist2strm.download.enable);
+        assert_eq!(config.alist2strm.download.concurrency, 5);
         assert!(
-            config.alist2strm_tasks[0]
+            config
+                .alist2strm
                 .sync
                 .as_ref()
                 .expect("sync config should exist")
                 .enabled
         );
         assert!(
-            config.alist2strm_tasks[0]
+            config
+                .alist2strm
                 .sync
                 .as_ref()
                 .and_then(|sync| sync.smart_protection.as_ref())
@@ -695,6 +750,52 @@ mod tests {
             config.library_poster_tasks[0].render.style,
             library_poster::Style::Collage
         );
+    }
+
+    #[test]
+    fn legacy_task_level_alist2strm_fields_are_ignored() {
+        // 旧配置把并发 / 下载 / 同步写在任务里：应能正常解析（不报错），
+        // 但取值来自全局段，任务级字段被忽略。
+        let yaml = "\
+alist2strm_tasks:
+  - id: 旧任务
+    alist: 我的Alist
+    source_dir: /ani
+    target_dir: /media/ani
+    concurrency: 20
+    download:
+      enable: true
+      subtitle: true
+    sync:
+      enabled: true
+";
+        let config = Config::from_yaml(yaml).expect("legacy config should parse");
+        assert_eq!(config.alist2strm_tasks.len(), 1);
+        assert_eq!(config.alist2strm.concurrency, 50, "任务级并发应被忽略");
+        assert!(!config.alist2strm.download.enable, "任务级下载应被忽略");
+        assert!(config.alist2strm.sync.is_none(), "任务级同步应被忽略");
+    }
+
+    #[test]
+    fn validates_global_alist2strm_ranges() {
+        let yaml = "\
+alist2strm:
+  concurrency: 0
+  download:
+    concurrency: 0
+  sync:
+    enabled: true
+    smart_protection:
+      enabled: true
+      threshold: 0
+      grace_scans: 0
+";
+        let config = Config::from_yaml(yaml).expect("config should parse");
+        let fields: Vec<String> = config.validate().into_iter().map(|it| it.field).collect();
+        assert!(fields.contains(&"alist2strm.concurrency".to_string()));
+        assert!(fields.contains(&"alist2strm.download.concurrency".to_string()));
+        assert!(fields.contains(&"alist2strm.sync.smart_protection.threshold".to_string()));
+        assert!(fields.contains(&"alist2strm.sync.smart_protection.grace_scans".to_string()));
     }
 
     #[test]

@@ -1,5 +1,8 @@
 config/config.yaml
 config/config.old.yaml
+config/web.yaml
+
+.workbuddy/
 
 logs/*
 strm/*

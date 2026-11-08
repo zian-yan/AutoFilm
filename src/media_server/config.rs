@@ -24,6 +24,16 @@ fn default_timeout() -> u64 {
     30
 }
 
+/// Jellyfin 的 `Authorization: MediaBrowser Token="..."` 用双引号包裹密钥，
+/// 因此密钥不能含引号、逗号、反斜杠、空白或非 ASCII 字符。
+/// Jellyfin/Emby 生成的 API Key 均为十六进制或 GUID，天然满足条件。
+pub fn is_safe_api_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,10 +38,27 @@ media_servers:
   - id: 我的Jellyfin                     # 标识 ID，用于 LibraryPoster 任务引用
     kind: jellyfin                      # 服务器类型：jellyfin 或 emby
     base_url: http://jellyfin:8096      # 媒体服务器地址
-    api_key: your-api-key               # Jellyfin/Emby API Key
+    api_key: your-api-key               # Jellyfin/Emby API Key；Jellyfin 请勿含空格、引号等特殊字符
     user_id:                            # 查询媒体项使用的用户 ID；留空时自动使用首个用户
     timeout: 30                         # HTTP 请求超时时间，单位秒
 
+
+alist2strm:                                # Alist2Strm 全局设置：所有同步任务共用一份，任务里不再单独配置
+  concurrency: 50                          # 同时处理的文件数量上限，可以减轻运行设备与 AList 服务器负载
+  download:                                # 伴生文件下载（字幕、图片、NFO、自定义后缀）
+    enable: false                          # 是否下载伴生文件；平铺模式下始终不下载
+    subtitle: false                        # 是否下载字幕：.ass、.srt、.ssa、.sub
+    image: false                           # 是否下载图片：.png、.jpg
+    nfo: false                             # 是否下载 .nfo
+    other_ext: []                          # 自定义下载后缀列表，例如 [".zip", ".md"]
+    concurrency: 5                         # 同时下载伴生文件的数量上限
+  sync:                                    # 同步删除（远端已不存在的本地文件）
+    enabled: true                          # 是否开启；扫描失败的目录会自动排除在删除范围外
+    ignore: "\\.(nfo|jpg)$"                # 删除时忽略的文件名正则；仅匹配文件名，不匹配完整路径
+    smart_protection:                      # 智能删除保护，仅在 sync.enabled 为 true 时生效
+      enabled: true                        # 是否启用保护
+      threshold: 100                       # 触发保护的待删除文件数量阈值
+      grace_scans: 3                       # 达到阈值后连续确认多少次才真正删除
 
 alist2strm_tasks:
   - id: 动漫                                 # 标识 ID，用于日志和 .strm 智能保护状态文件
@@ -51,21 +68,6 @@ alist2strm_tasks:
     target_dir: /media/ani                  # 本地 .strm 和伴生文件输出目录
     flatten_mode: false                     # 平铺模式；开启后所有 .strm 输出到同一级目录，且不会下载伴生文件
     overwrite: false                        # 覆盖模式；本地已存在同名文件时是否重新生成/下载
-    concurrency: 50                         # 执行任务的最大并发处理数，可以减轻运行设备与 AList 服务器负载
-    download:                               # 下载相关配置
-      enable: false                         # 是否下载字幕、图片、NFO 和自定义后缀等伴生文件
-      subtitle: false                       # 是否下载字幕文件：.ass、.srt、.ssa、.sub
-      image: false                          # 是否下载图片文件：.png、.jpg
-      nfo: false                            # 是否下载 .nfo 文件
-      other_ext: []                         # 自定义下载后缀列表，例如 [".zip", ".md"]
-      concurrency: 5                        # 最大同时下载伴生文件数量
-    sync:                                   # 同步远程相关配置
-      enabled: true                         # 是否同步服务器删除；开启后远端不存在的本地文件会被删除（扫描失败的目录会自动排除）
-      ignore: "\\.(nfo|jpg)$"               # 同步删除时忽略的文件名正则；仅匹配文件名，不匹配完整路径
-      smart_protection:                     # 智能删除保护，仅在 sync.enabled 为 true 时生效
-        enabled: true                       # 是否启用保护（默认 false）
-        threshold: 100                      # 触发保护的待删除文件数量阈值（覆盖 .strm 与字幕/图片/nfo）
-        grace_scans: 3                      # 达到阈值后，连续确认多少次才真正删除
 
   - id: 电影
     cron: 0 0 20 * * *
@@ -74,21 +76,6 @@ alist2strm_tasks:
     target_dir: /media/movies
     flatten_mode: false
     overwrite: false
-    concurrency: 20
-    download:
-      enable: true
-      subtitle: true
-      image: true
-      nfo: true
-      other_ext:
-        - .zip
-        - .md
-      concurrency: 5
-    sync:
-      enabled: true
-      ignore:
-      smart_protection:
-        enabled: false
 
 ani2alist_tasks:
   - id: 新番追更                                      # 标识 ID，用于日志和调度识别

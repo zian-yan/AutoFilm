@@ -23,6 +23,11 @@ pub struct Client {
 impl Client {
     /// 创建媒体服务器客户端并统一处理基础 URL、超时和认证请求头。
     pub fn new(mut config: Config) -> Result<Self> {
+        if config.kind == super::Kind::Jellyfin && !super::is_safe_api_key(&config.api_key) {
+            return Err(Error::InvalidApiKey {
+                id: config.id.clone(),
+            });
+        }
         config.base_url = config.base_url.trim_end_matches('/').to_string();
         let base_url = Url::parse(&format!("{}/", config.base_url))
             .map_err(|err| Error::InvalidUrl(err.to_string()))?;
@@ -189,12 +194,24 @@ impl Client {
             .base_url
             .join(path)
             .map_err(|err| Error::InvalidUrl(err.to_string()))?;
-        Ok(self
-            .http
-            .request(method, url)
-            .header("X-Emby-Token", &self.config.api_key)
-            .query(&[("api_key", self.config.api_key.as_str())])
-            .query(query))
+        let mut builder = self.http.request(method, url);
+        match self.config.kind {
+            // Jellyfin 12 起默认禁用 X-Emby-Token 与 ?api_key=，统一改用 MediaBrowser 方案；
+            // 该认证头在 10.8+ 同样有效，无需探测服务器版本。
+            super::Kind::Jellyfin => {
+                builder = builder.header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("MediaBrowser Token=\"{}\"", self.config.api_key),
+                );
+            }
+            // Emby 只认 api_key 这个参数名，保留原有认证方式。
+            super::Kind::Emby => {
+                builder = builder
+                    .header("X-Emby-Token", &self.config.api_key)
+                    .query(&[("api_key", self.config.api_key.as_str())]);
+            }
+        }
+        Ok(builder.query(query))
     }
 
     async fn success(response: reqwest::Response) -> Result<reqwest::Response> {
@@ -284,18 +301,62 @@ mod tests {
         assert_eq!(image, b"image");
 
         let requests = (0..5).map(|_| requests.recv().unwrap()).collect::<Vec<_>>();
-        assert!(requests[0].starts_with("GET /Users?api_key=secret HTTP/1.1"));
-        assert!(requests[1].contains("/Library/MediaFolders?api_key=secret"));
+        assert!(requests[0].starts_with("GET /Users HTTP/1.1"));
+        assert!(requests[1].contains("/Library/MediaFolders"));
         assert!(requests[2].contains("ParentId=library"));
         assert!(requests[2].contains("SortBy=DateCreated"));
-        assert!(requests[3].contains("/Items/movie/Images/Primary?api_key=secret&tag=tag"));
-        assert!(requests[4].starts_with("POST /Items/library/Images/Primary?api_key=secret"));
-        assert!(
-            requests[4]
-                .to_ascii_lowercase()
-                .contains("x-emby-token: secret")
-        );
+        assert!(requests[3].contains("/Items/movie/Images/Primary?tag=tag"));
+        assert!(requests[4].starts_with("POST /Items/library/Images/Primary"));
         assert!(requests[4].ends_with("encoded-image"));
+        for request in &requests {
+            let lower = request.to_ascii_lowercase();
+            assert!(
+                lower.contains("authorization: mediabrowser token=\"secret\""),
+                "Jellyfin 请求必须携带 MediaBrowser 认证头: {request}"
+            );
+            assert!(
+                !lower.contains("x-emby-token"),
+                "Jellyfin 请求不得再发送旧认证头: {request}"
+            );
+            assert!(
+                !request.contains("api_key="),
+                "密钥不得出现在 URL 中: {request}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn uses_legacy_auth_for_emby() {
+        let (base_url, requests) = spawn_server(vec![Response::json(
+            r#"{"Items":[{"Id":"library","Name":"电影"}]}"#,
+        )]);
+        let mut server_config = config(&base_url);
+        server_config.kind = Kind::Emby;
+        let client = Client::new(server_config).unwrap();
+
+        assert_eq!(client.libraries().await.unwrap()[0].name, "电影");
+
+        let request = requests.recv().unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(request.contains("/Library/MediaFolders?api_key=secret"));
+        assert!(lower.contains("x-emby-token: secret"));
+        assert!(!lower.contains("authorization: mediabrowser"));
+    }
+
+    #[test]
+    fn rejects_unsafe_jellyfin_api_key() {
+        let mut server_config = config("http://localhost:8096");
+        server_config.api_key = "bad\"key".to_string();
+        assert!(matches!(
+            Client::new(server_config),
+            Err(Error::InvalidApiKey { .. })
+        ));
+
+        // Emby 沿用请求头 + 查询参数，不受 MediaBrowser 语法限制。
+        let mut server_config = config("http://localhost:8096");
+        server_config.kind = Kind::Emby;
+        server_config.api_key = "legacy key".to_string();
+        assert!(Client::new(server_config).is_ok());
     }
 
     struct Response {
