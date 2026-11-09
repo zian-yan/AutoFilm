@@ -30,8 +30,6 @@ jobs:
     steps:
       - name: Clone Repository
         uses: actions/checkout@v6
-        with:
-          submodules: recursive
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -66,8 +64,6 @@ jobs:
     steps:
       - name: Clone Repository
         uses: actions/checkout@v6
-        with:
-          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@nightly

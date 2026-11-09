@@ -1,0 +1,14 @@
+//! Client methods for `/api/public/*`.
+
+use super::Client;
+use crate::error::Result;
+use crate::models::public::PublicSettings;
+use reqwest::Method;
+
+impl Client {
+    /// Fetch public site settings from `/api/public/settings`.
+    pub async fn public_settings(&self) -> Result<PublicSettings> {
+        self.request::<(), PublicSettings>(Method::GET, "/public/settings", None, false)
+            .await
+    }
+}
