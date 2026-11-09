@@ -7,6 +7,18 @@
 
 > 本仓库从 `v1.0.0` 起重置版本号，作为独立发布线的起点；此前上游（AkimioJR/AutoFilm）的历史版本请查阅 Git 提交记录与上游 Release。
 
+## [2.2.0] - 2026-11-09
+
+### 🔧 变更
+
+- **[Core]**: `alist-client-rs` 由 git submodule 改为仓库内置目录，客户端源码与主仓库同版本演进。此前它的定制补丁只能停留在本地——`.gitmodules` 指向上游仓库、没有推送权限，一条只存在于本机的新提交 CI 无法拉取，构建与发布都复现不出来；内置后 `cargo build` 与发布流水线都不再需要 `submodules: recursive`。
+- **[Core]**: 补上 v2.0.0 变更日志中已描述、但当时并未真正进入仓库的客户端补丁：HTTP 连接超时 15 秒、请求整体超时 120 秒，AList 挂起时任务不再永久等待。
+
+### ⚡ 优化
+
+- **[Core]**: 并发请求同时收到 `401` 时只重新登录一次——比对请求前后的令牌是否已被其它请求刷新，并用互斥锁串行化刷新过程，避免重复登录触发 AList 的登录限流。
+- **[Core]**: 修复客户端单元测试的偶发失败——mock 服务器原来只读一次请求就回包并关闭连接，请求体稍大的用例会因 TCP 分片收到 `IncompleteMessage`（本机约 50% 复现），改为按 `Content-Length` 读完整个请求再响应。
+
 ## [2.1.0] - 2026-11-09
 
 ### ✨ 新增
@@ -123,6 +135,7 @@
 
 <!-- 底部对比链接 -->
 
+[2.2.0]: https://github.com/zian-yan/AutoFilm/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/zian-yan/AutoFilm/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/zian-yan/AutoFilm/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/zian-yan/AutoFilm/compare/v1.0.0...v1.1.0
