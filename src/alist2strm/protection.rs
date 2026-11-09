@@ -162,7 +162,7 @@ impl ProtectionManager {
 ///
 /// 任务 ID 来自配置，可能包含路径分隔符；直接拼进状态文件名会写到目标目录
 /// 之外，因此只保留字母、数字、`-`、`_` 与常见 Unicode 字符。
-fn sanitize_state_id(task_id: &str) -> String {
+pub(super) fn sanitize_state_id(task_id: &str) -> String {
     let sanitized = task_id
         .chars()
         .map(|character| match character {

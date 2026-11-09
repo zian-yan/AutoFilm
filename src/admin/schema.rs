@@ -124,12 +124,13 @@ pub fn schema() -> Value {
                 },
                 "fields": [
                     { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "动漫", "help": "用于日志与智能保护状态文件，需唯一" },
-                    { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 0 20 * * *", "help": "6 段：秒 分 时 日 月 周；留空表示不参与调度" },
+                    { "key": "cron", "label": "Cron 表达式", "kind": "cron", "nullable": true, "placeholder": "0 0 20 * * *", "help": "6 段：秒 分 时 日 月 周；可点「随机」生成每天 00:00–23:59 内的随机时刻；留空表示不参与调度" },
                     { "key": "alist", "label": "AList 客户端", "kind": "select", "required": true, "options_from": "alist" },
                     { "key": "source_dir", "label": "扫描目录", "kind": "alist_path", "required": true, "placeholder": "/ani", "alist_ref": "alist", "help": "点「浏览」直接从 AList 已有目录中选择" },
                     { "key": "target_dir", "label": "输出目录", "kind": "text", "required": true, "placeholder": "/media/ani", "help": "本地 .strm 与伴生文件输出位置" },
                     { "key": "flatten_mode", "label": "平铺模式", "kind": "bool", "help": "所有 .strm 输出到同一级目录，且不下载伴生文件" },
-                    { "key": "overwrite", "label": "覆盖已存在文件", "kind": "bool" }
+                    { "key": "overwrite", "label": "覆盖已存在文件", "kind": "bool" },
+                    { "key": "dir_time_check", "label": "目录时间检查", "kind": "bool", "help": "开启后仅当远端目录的修改时间晚于本地目录时才扫描其子目录；若文件已更新但仍被跳过，请取消本选项" }
                 ],
                 "template": {
                     "id": "",
@@ -138,7 +139,8 @@ pub fn schema() -> Value {
                     "source_dir": "/",
                     "target_dir": "/media/",
                     "flatten_mode": false,
-                    "overwrite": false
+                    "overwrite": false,
+                    "dir_time_check": false
                 }
             },
             {
@@ -161,7 +163,7 @@ pub fn schema() -> Value {
                 },
                 "fields": [
                     { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "新番追更" },
-                    { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 20 12 * * *" },
+                    { "key": "cron", "label": "Cron 表达式", "kind": "cron", "nullable": true, "placeholder": "0 20 12 * * *", "help": "6 段：秒 分 时 日 月 周；可点「随机」生成每天随机时刻" },
                     { "key": "alist", "label": "AList 客户端", "kind": "select", "required": true, "options_from": "alist", "help": "需要管理员权限的 AList 客户端" },
                     { "key": "target_dir", "label": "挂载路径", "kind": "alist_path", "required": true, "placeholder": "/Anime", "alist_ref": "alist", "help": "UrlTree 存储器挂载路径，不存在时自动创建；可点「浏览」参考已有目录" },
                     { "key": "source.source_url", "label": "目录数据源", "kind": "text", "required": true, "placeholder": "https://aniopen.an-i.workers.dev" },
@@ -207,7 +209,7 @@ pub fn schema() -> Value {
                 },
                 "fields": [
                     { "key": "id", "label": "任务 ID", "kind": "text", "required": true, "placeholder": "媒体库海报" },
-                    { "key": "cron", "label": "Cron 表达式", "kind": "text", "nullable": true, "placeholder": "0 50 13 * * *" },
+                    { "key": "cron", "label": "Cron 表达式", "kind": "cron", "nullable": true, "placeholder": "0 50 13 * * *", "help": "6 段：秒 分 时 日 月 周；可点「随机」生成每天随机时刻" },
                     { "key": "server", "label": "媒体服务器", "kind": "select", "required": true, "options_from": "media_servers" },
                     { "key": "upload", "label": "上传到服务器", "kind": "bool", "help": "覆盖媒体库 Primary 图片" },
                     { "key": "output_dir", "label": "预览输出目录", "kind": "text", "nullable": true, "placeholder": "/media/posters", "help": "未开启上传时必填" },

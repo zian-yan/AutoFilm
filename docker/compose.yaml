@@ -5,6 +5,10 @@ services:
     image: ghcr.io/zian-yan/autofilm:latest
     container_name: autofilm
     restart: unless-stopped # 推荐加上：容器异常退出时自动重启
+    environment:
+      # 日志与任务使用的时间：容器默认 Asia/Shanghai，改成其它 IANA 时区即可
+      # （优先级：命令行 --timezone > TZ > 系统时区 > UTC）
+      TZ: Asia/Shanghai
     volumes:
       - ./config:/config # 配置目录：业务配置 config.yaml 与面板配置 web.yaml 都在这里，两份都允许为空或不存在
       - ./logs:/logs # 日志目录，容器运行时会在该目录下生成日志文件

@@ -1028,6 +1028,27 @@ function controlFor(section, item, field, controlId, wrapper) {
       wrapper.appendChild(row);
       return;
     }
+    case 'cron': {
+      // 定时字段：保留手输 6 段表达式，同时提供「随机」在每天 00:00–23:59 内取一个时刻。
+      const row = element('div', 'input-row');
+      const input = textInput(field, controlId, value, 'text');
+      input.addEventListener('input', () => {
+        commit(field.nullable ? emptyToNull(input.value) : input.value.trim());
+      });
+      const dice = element('button', 'btn btn-ghost btn-small', '随机');
+      dice.type = 'button';
+      dice.title = '生成每天 00:00–23:59 内随机时刻的表达式';
+      dice.addEventListener('click', () => {
+        const next = randomDailyCron(input.value);
+        input.value = next;
+        commit(next);
+        toast('ok', `已生成随机定时：${next}`);
+      });
+      row.appendChild(input);
+      row.appendChild(dice);
+      wrapper.appendChild(row);
+      return;
+    }
     case 'list': {
       const input = textInput(field, controlId, (Array.isArray(value) ? value : []).join(', '), 'text');
       input.addEventListener('input', () => {
@@ -1072,6 +1093,20 @@ function controlFor(section, item, field, controlId, wrapper) {
       wrapper.appendChild(input);
     }
   }
+}
+
+/**
+ * 生成 6 段 cron（秒固定 0，分与时随机），即「每天 00:00–23:59 内的随机时刻」。
+ * 传入当前值时会重试，尽量不生成与原来完全相同的表达式。
+ */
+function randomDailyCron(current) {
+  const existing = current == null ? '' : String(current).trim();
+  const pick = () => `0 ${Math.floor(Math.random() * 60)} ${Math.floor(Math.random() * 24)} * * *`;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const next = pick();
+    if (next !== existing) return next;
+  }
+  return pick();
 }
 
 function textInput(field, controlId, value, type) {

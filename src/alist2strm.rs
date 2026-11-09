@@ -2,6 +2,7 @@ mod config;
 mod errors;
 mod path;
 mod protection;
+mod retry;
 mod runner;
 mod summary;
 mod utils;

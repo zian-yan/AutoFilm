@@ -68,6 +68,8 @@ alist2strm_tasks:
     target_dir: /media/ani                  # 本地 .strm 和伴生文件输出目录
     flatten_mode: false                     # 平铺模式；开启后所有 .strm 输出到同一级目录，且不会下载伴生文件
     overwrite: false                        # 覆盖模式；本地已存在同名文件时是否重新生成/下载
+    dir_time_check: false                   # 目录时间检查；仅当远端目录修改时间晚于本地目录时才扫描其子目录。
+                                            # 文件已更新却仍被跳过时，请关闭本项（部分网盘驱动的目录时间不随内容更新）
 
   - id: 电影
     cron: 0 0 20 * * *

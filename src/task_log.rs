@@ -17,7 +17,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::{SecondsFormat, Utc};
+use chrono::Utc;
 use chrono_tz::Tz;
 use tracing::{
     Event, Id, Subscriber,
@@ -88,11 +88,13 @@ impl TaskLogStore {
         }
     }
 
-    /// 与面板其它日志一致，使用应用时区并带 UTC 偏移。
+    /// 与面板其它日志一致，使用应用时区；样式与控制台 / 按天文件保持统一
+    /// （`11-07 12:21:02`）。
     fn timestamp(&self) -> String {
         Utc::now()
             .with_timezone(&self.tz)
-            .to_rfc3339_opts(SecondsFormat::Millis, true)
+            .format("%m-%d %H:%M:%S")
+            .to_string()
     }
 
     fn path_for(root: &Path, key: &str) -> PathBuf {
@@ -334,14 +336,16 @@ where
         event.record(&mut visitor);
         let meta = event.metadata();
         let timestamp = store.timestamp();
-        let mut line = format!(
-            "{timestamp} {:<5} [{}] {}",
-            meta.level(),
-            meta.target(),
-            visitor.message
-        );
+        // 与全局日志同款样式：`11-07 12:21:02 消息 字段=值`，非 INFO 才带级别标记。
+        let mut line = timestamp;
+        line.push(' ');
+        if let Some(tag) = crate::logging::level_tag(meta.level()) {
+            line.push_str(tag);
+            line.push(' ');
+        }
+        line.push_str(&visitor.message);
         if !visitor.fields.is_empty() {
-            line.push_str(" | ");
+            line.push(' ');
             line.push_str(&visitor.fields.join(" "));
         }
         store.append(&key, &line);

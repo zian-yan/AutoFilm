@@ -22,7 +22,7 @@ pub(super) struct DailyFileAppender {
 impl DailyFileAppender {
     pub(super) fn new(directory: PathBuf, timezone: Tz) -> io::Result<Self> {
         fs::create_dir_all(&directory)?;
-        prune_old_logs(&directory, KEEP_DAYS);
+        prune_old_logs(&directory, KEEP_DAYS, timezone);
 
         Ok(Self {
             directory,
@@ -44,7 +44,7 @@ impl DailyFileAppender {
             self.file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             self.current_date = Some(date);
             // 每天切换文件时顺手清理过期日志。
-            prune_old_logs(&self.directory, KEEP_DAYS);
+            prune_old_logs(&self.directory, KEEP_DAYS, self.timezone);
         }
 
         self.file
@@ -79,11 +79,12 @@ fn log_file_path(directory: &Path, date: NaiveDate) -> PathBuf {
 ///
 /// 只处理文件名形如 `YYYY-MM-DD.log` 的文件，其它文件一律不动。错误会被
 /// 静默忽略：这里运行在日志写入线程里，不能因为清理失败影响日志本身。
-fn prune_old_logs(directory: &Path, keep_days: u64) {
+fn prune_old_logs(directory: &Path, keep_days: u64, timezone: Tz) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
     let Some(cutoff) = Utc::now()
+        .with_timezone(&timezone)
         .date_naive()
         .checked_sub_days(Days::new(keep_days))
     else {
@@ -142,7 +143,7 @@ mod tests {
         fs::write(&recent_file, b"recent").unwrap();
         fs::write(&unrelated, b"other").unwrap();
 
-        prune_old_logs(&directory, KEEP_DAYS);
+        prune_old_logs(&directory, KEEP_DAYS, chrono_tz::UTC);
 
         assert!(!old_file.exists(), "expired log file should be removed");
         assert!(recent_file.exists(), "recent log file should be kept");

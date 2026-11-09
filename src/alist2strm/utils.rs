@@ -24,12 +24,14 @@ pub(super) fn is_internal_file(path: &Path) -> bool {
 
 /// 判断本地伴生文件是否已经过期或疑似损坏。
 ///
-/// 如果本地文件大小小于远端大小，或本地修改时间不晚于远端修改时间，则认为
-/// 需要重新下载。该逻辑只在 `overwrite=false` 且本地文件已存在时用于伴生文件。
+/// 本地大小小于远端大小、或本地修改时间早于远端时间时，认为需要重新下载。
+/// `remote_timestamps` 同时给出远端的创建与修改时间：任务会把本地文件时间
+/// 对齐到远端时间，若本地 mtime 恰好等于其中之一，说明这一份就是最新内容，
+/// 不能当成过期——否则每轮同步都会把伴生文件重下一遍。
 pub(super) async fn companion_file_is_stale(
     local_path: &Path,
     remote_size: u64,
-    remote_modified_timestamp: i64,
+    remote_timestamps: &[i64],
 ) -> Result<bool> {
     let metadata = fs::metadata(local_path).await?;
     if metadata.len() < remote_size {
@@ -37,7 +39,13 @@ pub(super) async fn companion_file_is_stale(
     }
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-            return Ok(duration.as_secs() as i64 <= remote_modified_timestamp);
+            let local_timestamp = duration.as_secs() as i64;
+            if remote_timestamps.contains(&local_timestamp) {
+                return Ok(false);
+            }
+            // 与最“新”的远端时间比较：任何一个都更晚才算过期。
+            let newest = remote_timestamps.iter().copied().max().unwrap_or(i64::MIN);
+            return Ok(local_timestamp < newest);
         }
     }
     Ok(false)
@@ -117,7 +125,7 @@ pub(super) async fn remove_empty_parents(parent: Option<&Path>, target_dir: &Pat
             debug!(path = %dir.display(), error = %err, "删除空目录失败，停止清理");
             break;
         }
-        info!(path = %dir.display(), "删除空目录");
+        info!("删除空目录: {}", dir.display());
         current = dir.parent().map(Path::to_path_buf);
     }
     Ok(())

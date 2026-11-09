@@ -52,6 +52,12 @@ pub struct Config {
     pub flatten_mode: bool,
     #[serde(default)]
     pub overwrite: bool,
+    /// 目录时间检查：远端目录的修改时间不晚于本地目录时，跳过该子树的扫描。
+    ///
+    /// 适合大规模媒体库的增量扫描；但部分网盘驱动的目录时间不随内容更新，
+    /// 会出现「文件已更新却仍被跳过」，此时应关闭该项。
+    #[serde(default)]
+    pub dir_time_check: bool,
 }
 
 /// Alist2Strm 全局设置。

@@ -181,19 +181,17 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                 let task_id = task_id.clone();
                 Box::pin(async move {
                     let Some(_slot) = guard.try_acquire() else {
-                        warn!(
-                            task_id = %task_id,
-                            "上一次 Alist2Strm 任务仍在运行，跳过本次执行"
-                        );
+                        warn!("上一次任务仍在运行，跳过本次执行: {task_id}");
                         return;
                     };
-                    info!(task_id = %task_id, "开始执行 Alist2Strm 任务");
                     match runner.run().await {
                         Err(err) => {
-                            error!(task_id = %task_id, error = %err, "Alist2Strm 任务失败");
+                            error!("任务失败: {task_id}（{err}）");
                         }
                         Ok(summary) => {
-                            info!(
+                            // 面向人的汇总由 runner 负责（三段式中文行）；这里只保留
+                            // 排障需要的明细，默认 INFO 下不刷屏。
+                            debug!(
                                task_id = %summary.task_id,
                                source_dir = %summary.source_dir,
                                target_dir = %summary.target_dir.display(),
@@ -202,6 +200,7 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                                duration = ?summary.duration,
                                scanned_dir_count = summary.scanned_dir_count,
                                skipped_dir_count = summary.skipped_dir_count,
+                               failed_dir_count = summary.failed_dir_count,
                                discovered_file_count = summary.discovered_file_count,
                                matched_file_count = summary.matched_file_count,
                                filtered_file_count = summary.filtered_file_count,
@@ -216,7 +215,7 @@ pub async fn create_scheduler(config: Config, tz: Tz) -> Result<Scheduled, JobSc
                                local_deleted_count = summary.local_deleted_count,
                                local_delete_ignored_count = summary.local_delete_ignored_count,
                                failed_path_count = summary.failed_path_count,
-                               "Alist2Strm 任务完成"
+                               "Alist2Strm 任务统计明细"
                             );
                         }
                     }
