@@ -22,7 +22,6 @@ autofilm/config/mediawarp.yaml
 autofilm/**/*.bak
 autofilm/**/*.tmp
 
-mediawarp/.git
 mediawarp/.github
 mediawarp/logs
 mediawarp/dist
