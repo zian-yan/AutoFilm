@@ -27,6 +27,10 @@
 
   > `mediawarp/` 目录为 [MediaWarp](https://github.com/zian-yan/MediaWarp)（上游 <https://github.com/AkimioJR/MediaWarp>）**v1.2.3** 源码，tag `v1.2.3` / commit `acbb22d5740a3c57f6410cbe15208b11def195ec`，仅用于在同一镜像内编译；嵌套 `.git` 已移除，源码纳入本仓库版本控制。其许可证为修改版 GNU AGPL-3.0（见 `mediawarp/LICENSE`），附加条件包括：归属原作者 AkimioJR、不得用于商业活动、使用或参考其代码须开源修改并明确注明来源。据此声明：**本项目中 MediaWarp 相关代码与实现思路来自 MediaWarp 项目**。AutoFilm 自身许可见 `autofilm/LICENSE`。
 
+### 🐛 修复
+
+- **[Build]**: 修复交叉编译容器只挂载 `autofilm/` 子目录、无法读取仓库根 `.git` 时 `vergen` 不生成 Git 元数据导致的编译失败；缺失信息回退为 `unknown`，各平台二进制均可正常构建。
+
 ## [2.2.1] - 2026-11-10
 
 ### ✨ 新增
@@ -171,6 +175,7 @@
 
 <!-- 底部对比链接 -->
 
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...HEAD
 [3.0.0]: https://github.com/zian-yan/AutoFilm/releases/tag/v3.0.0
 [2.2.1]: https://github.com/zian-yan/AutoFilm/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/zian-yan/AutoFilm/compare/v2.1.0...v2.2.0

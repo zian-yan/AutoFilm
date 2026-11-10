@@ -28,8 +28,10 @@ pub static APPLICATION_INFO: LazyLock<ApplicationInfo> = LazyLock::new(|| Applic
         .collect(),
     repository: env!("CARGO_PKG_REPOSITORY").into(),
     rustc_version: env!("VERGEN_RUSTC_SEMVER").into(),
-    git_commit: env!("VERGEN_GIT_SHA").into(),
-    git_branch: env!("VERGEN_GIT_BRANCH").into(),
+    // 交叉编译容器只挂载 autofilm/ 子目录时看不到仓库根的 .git，
+    // vergen 不会生成这两个变量；用 option_env! 兜底，避免 env! 直接编译失败。
+    git_commit: option_env!("VERGEN_GIT_SHA").unwrap_or("unknown").into(),
+    git_branch: option_env!("VERGEN_GIT_BRANCH").unwrap_or("unknown").into(),
     build_time: env!("VERGEN_BUILD_TIMESTAMP")
         .parse::<DateTime<Local>>()
         .unwrap(),
