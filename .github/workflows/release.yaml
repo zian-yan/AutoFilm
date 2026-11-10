@@ -53,7 +53,7 @@ jobs:
 
       # 根据可执行二进制文件的后缀进行打包，如果无后缀，则使用tar.gz格式，如果是exe，则使用zip格式
       # 打包后的文件名为 AutoFilm-<target>.<ext>
-      # 打包内容有可执行二进制文件、LICENSE、config/config.example.yaml、README.md
+      # 打包内容有可执行二进制文件、LICENSE、config/config.example.yaml
       - name: Package release files
         shell: bash
         run: |
@@ -86,15 +86,14 @@ jobs:
             cp "${bin_path}" "${package_dir}/${bin_name}"
             cp autofilm/LICENSE "${package_dir}/LICENSE"
             cp autofilm/config/config.example.yaml "${package_dir}/config.example.yaml"
-            cp autofilm/README.md "${package_dir}/README.md"
 
             pushd "${package_dir}" > /dev/null
 
             if [[ "${bin_name}" == *.exe ]]; then
-              zip -r "${output_dir}/AutoFilm-${target}.zip" "${bin_name}" LICENSE config.example.yaml README.md
+              zip -r "${output_dir}/AutoFilm-${target}.zip" "${bin_name}" LICENSE config.example.yaml
             else
               chmod +x "${bin_name}"
-              tar czf "${output_dir}/AutoFilm-${target}.tar.gz" "${bin_name}" LICENSE config.example.yaml README.md
+              tar czf "${output_dir}/AutoFilm-${target}.tar.gz" "${bin_name}" LICENSE config.example.yaml
             fi
 
             popd > /dev/null

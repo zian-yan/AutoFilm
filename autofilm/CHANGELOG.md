@@ -21,7 +21,9 @@
 - **[Docker]**: `autofilm/docker/Dockerfile` 与 `Dockerfile.ci` 改为 `COPY mediawarp/` 本地源码编译，去掉 `git clone` 与 `MEDIAWARP_REF`；构建上下文改为**仓库根目录**（`docker build -f autofilm/docker/Dockerfile .`）。Rust 侧 COPY 路径统一加 `autofilm/` 前缀，并补上 `build.rs` 与 `.git` 供 vergen 生成版本信息。Go 依赖仍由模块代理下载，可用 `go mod vendor` 转为完全离线。
 - **[Docker]**: `docker/compose.yaml` 默认映射 `9000` 端口；`config/mediawarp.example.yaml` 提供生成文件示例，生成文件本身已加入 `.gitignore`（含 API Key）。
 - **[Admin]**: 配置应用超时由 20 秒放宽到 45 秒，为一次完整的代理重启（停止 5s + 健康检查 10s）留出余量。
-- **[Docs]**: README 补充仓库结构、本地构建命令，以及按 MediaWarp 上游 LICENSE 第 3 条要求写明的来源与许可声明。
+- **[Docs]**: 移除仓库内全部 `README.md`，发布包不再附带 README。为避免丢失上游许可要求的归属信息，来源与许可声明改记于此：
+
+  > `mediawarp/` 目录为 [MediaWarp](https://github.com/zian-yan/MediaWarp)（上游 <https://github.com/AkimioJR/MediaWarp>）**v1.2.3** 源码，tag `v1.2.3` / commit `acbb22d5740a3c57f6410cbe15208b11def195ec`，仅用于在同一镜像内编译；嵌套 `.git` 已移除，源码纳入本仓库版本控制。其许可证为修改版 GNU AGPL-3.0（见 `mediawarp/LICENSE`），附加条件包括：归属原作者 AkimioJR、不得用于商业活动、使用或参考其代码须开源修改并明确注明来源。据此声明：**本项目中 MediaWarp 相关代码与实现思路来自 MediaWarp 项目**。AutoFilm 自身许可见 `autofilm/LICENSE`。
 
 ## [2.2.1] - 2026-11-10
 
