@@ -477,7 +477,17 @@ async function refresh() {
 function renderNav() {
   const nav = byId('nav');
   nav.textContent = '';
+  let grouped = false;
   for (const section of topLevelSections()) {
+    // detached 分区是面板自身配置（web.yaml），在导航里单独分组，
+    // 与「同步全局设置」等业务分区一眼可分；两者仍是各自独立的页面，
+    // 不做任何合并，点击行为保持不变。
+    if (section.detached && !grouped) {
+      const group = element('div', 'nav-group');
+      group.appendChild(element('span', 'nav-group-label', '面板自身'));
+      nav.appendChild(group);
+      grouped = true;
+    }
     nav.appendChild(navButton(section.key, section.title));
   }
 }

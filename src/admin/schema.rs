@@ -81,11 +81,13 @@ pub fn schema() -> Value {
                 }
             },
             {
+                // 独立顶层分区：过去用 parent 挂在 alist2strm_tasks 页面下方，
+                // 容易被当成「面板设置」。现在和 web_section 一样是侧边栏独立入口，
+                // 但两者数据源不同（config.yaml / web.yaml）、保存接口不同，绝不合并。
                 "key": "alist2strm",
                 "title": "同步全局设置",
-                "parent": "alist2strm_tasks",
-                "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效",
-                "item_label": "全局设置",
+                "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效；属于业务配置，保存在 config.yaml",
+                "item_label": "同步全局设置",
                 "single": true,
                 "addable": false,
                 "removable": false,
@@ -107,7 +109,7 @@ pub fn schema() -> Value {
             {
                 "key": "alist2strm_tasks",
                 "title": "Alist2Strm 任务",
-                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在本页下方的「同步全局设置」中统一配置",
+                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在侧边栏「同步全局设置」中统一配置",
                 "item_label": "同步任务",
                 "addable": true,
                 "removable": true,
@@ -248,11 +250,12 @@ pub fn schema() -> Value {
         ],
         // 面板配置单独下发：它保存在 web.yaml，与业务配置的版本号、保存接口
         // 完全独立，前端用 detached 标记把它当成独立表单渲染与提交。
+        // 导航上用「面板自身」分组与业务分区隔开，避免与同步全局设置混淆。
         "web_section": {
             "key": "web",
             "title": "Web 面板",
-            "subtitle": "面板自身的监听地址与认证信息（保存在独立的 web.yaml），保存后实时生效，无需重启进程",
-            "item_label": "面板设置",
+            "subtitle": "面板自身的监听地址与认证信息（保存在独立的 web.yaml），与业务配置 config.yaml 完全分离；保存后实时生效，无需重启进程",
+            "item_label": "Web 面板设置",
             "addable": false,
             "removable": false,
             "realtime": true,

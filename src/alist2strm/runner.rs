@@ -11,10 +11,7 @@ use alist::{
 };
 use chrono::{DateTime, Utc};
 use filetime::FileTime;
-use futures_util::{
-    future::FutureExt,
-    stream::{FuturesUnordered, StreamExt},
-};
+use futures_util::stream::StreamExt;
 use regex::Regex;
 use reqwest::StatusCode;
 use tokio::{fs, io::AsyncWriteExt, sync::Semaphore};
@@ -93,7 +90,7 @@ impl RunContext {
 /// `Bdmv` 分支，避免提前进入并发处理队列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathDecision {
-    /// 需要立即进入处理队列。
+    /// 加入当前目录批次，与同目录的其它文件一起并发处理。
     Process,
     /// 属于 BDMV 主片候选，先收集，扫描结束后统一选片。
     Bdmv,
@@ -122,7 +119,7 @@ impl Alist2Strm {
 
     /// 执行一次完整的 Alist2Strm 同步任务。
     ///
-    /// 流程包括创建 AList/HTTP 上下文、扫描远端目录、边扫描边处理普通文件、
+    /// 流程包括创建 AList/HTTP 上下文、按目录分批扫描并处理普通文件、
     /// 收集并处理 BDMV 主片、按需清理本地过期文件。单个远端目录或文件失败会
     /// 记录日志并跳过，初始化和本地清理等关键错误仍会返回给调度器。
     pub async fn run(&self) -> Result<RunSummary> {
@@ -419,11 +416,11 @@ impl Alist2Strm {
         local_dir_covers(&local_dir, remote_modified).await
     }
 
-    /// 扫描远端目录并立即处理普通文件。
+    /// 按目录分批扫描远端目录并处理普通文件。
     ///
-    /// 函数使用显式栈遍历 `source_dir` 下的 AList 目录；扫描到普通文件后会
-    /// 立刻提交到有上限的并发处理队列，避免等全量扫描完成才开始写入本地。
-    /// BDMV 候选文件会先收集到分组中，等待扫描结束后统一选择主片。
+    /// 使用显式栈做 DFS；每读完一个目录，把该目录下的 `.strm` 与伴生文件收集成
+    /// 一批，批内并发处理，**整批完成后才继续下一个目录**，保证目录之间不交错。
+    /// BDMV 候选文件仍先收集到分组中，等待扫描结束后统一选择主片。
     async fn collect_and_process_paths(
         &self,
         context: Arc<RunContext>,
@@ -439,8 +436,6 @@ impl Alist2Strm {
         let root_force = context.retry_dirs.contains(&self.config.source_dir);
         let mut stack: Vec<(String, Option<DateTime<Utc>>, bool)> =
             vec![(self.config.source_dir.clone(), None, root_force)];
-        let concurrency = self.settings.concurrency.max(1);
-        let mut pending = FuturesUnordered::new();
 
         while let Some((dir_path, remote_modified, force)) = stack.pop() {
             // 目录时间检查：远端目录没变过就整棵子树跳过，省掉逐层列目录的开销。
@@ -487,6 +482,9 @@ impl Alist2Strm {
                 item_count = resp.content.len(),
                 "AList 目录扫描完成"
             );
+            // 本目录的一批文件：视频的 .strm 与字幕 / 图片 / NFO 等伴生文件
+            // 混在同一批里，保证二者「同时生成」。
+            let mut batch: Vec<(String, ObjResp)> = Vec::new();
             for item in resp.content {
                 let object = item.object;
                 let full_path = join_alist_path(&dir_path, &object.name);
@@ -522,15 +520,9 @@ impl Alist2Strm {
                         debug!(
                             task_id = %self.config.id,
                             path = %full_path,
-                            "AList 路径加入处理队列"
+                            "AList 路径加入当前目录批次"
                         );
-                        pending.push(
-                            self.process_path_logged(context.clone(), full_path, object)
-                                .boxed(),
-                        );
-                        while pending.len() >= concurrency {
-                            pending.next().await;
-                        }
+                        batch.push((full_path, object));
                     }
                     Ok(PathDecision::Bdmv) => {
                         // BDMV 需要等同目录所有 m2ts 都收集完，才能按大小选主片。
@@ -555,9 +547,14 @@ impl Alist2Strm {
                     }
                 }
             }
-        }
 
-        while pending.next().await.is_some() {}
+            // 目录之间的屏障：等这一批全部落盘，才 pop 下一个目录。
+            if !batch.is_empty() {
+                let count = batch.len();
+                self.process_paths(context.clone(), batch).await?;
+                info!("目录处理完成: {dir_path}（{count} 个文件）");
+            }
+        }
 
         Ok(())
     }
@@ -630,11 +627,10 @@ impl Alist2Strm {
         Ok(PathDecision::Process)
     }
 
-    /// 并发处理一组已经确定需要处理的路径。
+    /// 并发处理一批已经确定需要处理的路径，并等待整批完成才返回。
     ///
-    /// 该函数主要用于扫描结束后的 BDMV 主片批处理；普通文件在扫描阶段已经
-    /// 通过 `collect_and_process_paths` 边扫描边提交。每个路径的失败会被记录并
-    /// 跳过，不会中断同批次其它路径。
+    /// 扫描阶段每个远端目录调用一次（批内并发、目录间串行）；扫描结束后的
+    /// BDMV 主片批次也走这里。单个路径失败会记录并跳过，不中断同批次其它路径。
     async fn process_paths(
         &self,
         context: Arc<RunContext>,
@@ -1259,6 +1255,54 @@ mod tests {
         let _ = fs::remove_file(&target_dir).await;
 
         assert!(result.is_ok());
+    }
+
+    /// 目录屏障依赖「批次返回时整批已落盘」：单测锁定这个契约。
+    #[tokio::test]
+    async fn process_paths_waits_for_whole_batch() {
+        let unique = format!(
+            "autofilm-batch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let target_dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let client = Arc::new(
+            Client::new("http://127.0.0.1:5244")
+                .unwrap()
+                .with_authentication(Token("token".to_string())),
+        );
+        let runner = Alist2Strm::new(
+            test_config(target_dir.clone()),
+            GlobalConfig {
+                concurrency: 3,
+                ..GlobalConfig::default()
+            },
+            client,
+            "http://127.0.0.1:5244".to_string(),
+        );
+        let context = Arc::new(test_context());
+        let files: Vec<(String, ObjResp)> = (1..=6)
+            .map(|index| {
+                let name = format!("movie-{index}.mkv");
+                (format!("/source/{name}"), test_object(&name))
+            })
+            .collect();
+
+        runner.process_paths(context.clone(), files).await.unwrap();
+
+        for index in 1..=6 {
+            assert!(
+                target_dir.join(format!("movie-{index}.strm")).exists(),
+                "批次文件 {index} 未落盘"
+            );
+        }
+        assert_eq!(context.stats.strm_created_count.load(Ordering::Relaxed), 6);
+
+        let _ = fs::remove_dir_all(&target_dir).await;
     }
 
     #[test]

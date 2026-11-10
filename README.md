@@ -37,7 +37,7 @@
 1. Docker 运行（**推荐**）
    见[docker-compose.yaml](docker/compose.yaml)
 
-   镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 始终跟随最新正式版；需要固定版本时改用 `ghcr.io/zian-yan/autofilm:2.2.0` 这类语义化标签。
+   镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 始终跟随最新正式版；需要固定版本时改用 `ghcr.io/zian-yan/autofilm:2.2.1` 这类语义化标签。
 
 2. 二进制运行
     ```bash

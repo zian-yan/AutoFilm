@@ -1,9 +1,10 @@
 /*
- * AutoFilm 登录页样式。
+ * AutoFilm 登录页 —— "Ink / Paper" 编辑式视觉
  *
- * 与主面板共用同一套 Jellyfin 色板与深/浅主题变量，但不加载 app.css：
- * 登录页只服务未认证用户，保持极简、独立，避免把面板样式全部带进来。
- * 尺寸基准：与主面板一致，在原始设计稿上统一放大 15%。
+ * 与主面板共用同一套设计令牌（五级字号 / 8px 栅格 / 小圆角 / 中性色阶 +
+ * 唯一靛蓝强调色），但不加载 app.css：登录页只服务未认证用户，保持极简独立。
+ * 层级规则与 app.css 头部的「层级契约」一致，两处修改需同步。
+ * 登录页没有导航与表格，强调色只出现在品牌块与主按钮两处。
  */
 
 :root {
@@ -12,50 +13,89 @@
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
 
-  --accent: #00a4dc;
-  --accent-strong: #0088bb;
-  --accent-soft: rgba(0, 164, 220, 0.14);
-  --accent-line: rgba(0, 164, 220, 0.45);
-  --violet: #aa5cc3;
-  --danger: #df5b62;
-  --danger-soft: rgba(223, 91, 98, 0.14);
-  --danger-line: rgba(223, 91, 98, 0.45);
+  --t-title: 19px;
+  --t-body: 15px;
+  --t-label: 13px;
+  --t-caption: 12px;
 
-  --radius-lg: 16.1px;
-  --radius: 9.2px;
-}
+  --w-normal: 400;
+  --w-medium: 500;
+  --w-semibold: 600;
+  --w-bold: 700;
 
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0e1014;
-  --bg-glow-a: rgba(0, 164, 220, 0.16);
-  --bg-glow-b: rgba(170, 92, 195, 0.14);
-  --surface: #171a1f;
-  --surface-2: #1e222a;
-  --border: #2b313a;
-  --border-strong: #3a424e;
-  --text: #e9edf3;
-  --text-strong: #ffffff;
-  --muted: #97a1af;
-  --shadow: 0 1px 2.3px rgba(0, 0, 0, 0.4), 0 20.7px 50.6px rgba(0, 0, 0, 0.36);
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+
+  --r-xs: 3px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-pill: 999px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur: 150ms;
 }
 
 html[data-theme="light"] {
   color-scheme: light;
-  --bg: #f2f4f7;
-  --bg-glow-a: rgba(0, 164, 220, 0.12);
-  --bg-glow-b: rgba(170, 92, 195, 0.1);
+
+  --paper: #f6f5f2;
   --surface: #ffffff;
-  --surface-2: #f7f9fb;
-  --border: #e3e7ed;
-  --border-strong: #ccd3dc;
-  --text: #1f242c;
-  --text-strong: #0b0e12;
-  --muted: #626d7d;
-  --shadow: 0 1px 2.3px rgba(16, 24, 40, 0.06), 0 18.4px 41.4px rgba(16, 24, 40, 0.1);
+  --surface-alt: #faf9f7;
+  --line: #e5e3de;
+  --line-strong: #cbc9c2;
+
+  --ink: #14171b;
+  --body: #434a53;
+  --muted: #6e767f;
+  --faint: #969ca4;
+
+  --accent-solid: #3341c9;
+  --accent-hover: #2733ad;
+  --accent-on: #ffffff;
+  --accent-ring: rgba(51, 65, 201, 0.16);
+
+  --danger: #b7332f;
+  --danger-tint: #fbecec;
+  --danger-line: #eacac8;
+
+  --shadow-2: 0 18px 48px -20px rgba(20, 23, 27, 0.26);
 }
 
-* {
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: #0e1114;
+  --surface: #161a1f;
+  --surface-alt: #1b2026;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.19);
+
+  --ink: #f4f6f8;
+  --body: #c3cad2;
+  --muted: #8d96a1;
+  --faint: #6a737e;
+
+  --accent-solid: #4a58e0;
+  --accent-hover: #5a67ec;
+  --accent-on: #ffffff;
+  --accent-ring: rgba(165, 176, 255, 0.2);
+
+  --danger: #ec7d78;
+  --danger-tint: rgba(236, 125, 120, 0.12);
+  --danger-line: rgba(236, 125, 120, 0.36);
+
+  --shadow-2: 0 20px 52px -20px rgba(0, 0, 0, 0.7);
+}
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -67,148 +107,178 @@ body {
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   font-family: var(--font-sans);
-  font-size: 16.1px;
-  color: var(--text);
-  background: var(--bg);
-  background-image:
-    radial-gradient(782px 483px at 12% -8%, var(--bg-glow-a), transparent 70%),
-    radial-gradient(713px 483px at 92% 6%, var(--bg-glow-b), transparent 72%);
-  background-attachment: fixed;
+  font-size: var(--t-body);
+  line-height: 1.6;
+  color: var(--body);
+  background: var(--paper);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .login-stage {
-  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 27.6px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--s-6);
 }
 
 .login-card {
-  width: 100%;
-  max-width: 414px;
   display: flex;
   flex-direction: column;
-  gap: 18.4px;
-  padding: 32.2px 29.9px 25.3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  gap: var(--s-5);
+  width: 100%;
+  max-width: 392px;
+  padding: var(--s-7) var(--s-6) var(--s-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-2);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 11.5px;
-  margin-bottom: 4.6px;
+  gap: var(--s-3);
+  margin-bottom: var(--s-1);
 }
 
 .brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 43.7px;
-  height: 43.7px;
-  border-radius: 11.5px;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.6px;
-  color: #ffffff;
-  background: linear-gradient(140deg, var(--accent), var(--violet));
-  box-shadow: 0 6.9px 18.4px var(--accent-soft);
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-sm);
+  background: var(--accent-solid);
+  color: var(--accent-on);
+  font-size: var(--t-label);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.02em;
 }
 
 .brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .brand-text strong {
-  font-size: 18.4px;
-  color: var(--text-strong);
+  font-size: var(--t-title);
+  font-weight: var(--w-bold);
+  letter-spacing: -0.02em;
+  color: var(--ink);
 }
 
 .brand-text small {
-  font-size: 13.8px;
-  color: var(--muted);
+  margin-top: 3px;
+  font-size: var(--t-caption);
+  font-weight: var(--w-normal);
+  color: var(--faint);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6.9px;
+  gap: 6px;
 }
 
+/* L3 */
 .field-label {
-  font-size: 14.4px;
-  color: var(--muted);
+  font-size: var(--t-label);
+  font-weight: var(--w-semibold);
+  color: var(--body);
 }
 
+/* L2 */
 .field input {
-  height: 43.7px;
-  padding: 0 13.8px;
+  width: 100%;
+  height: 42px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
   font-family: inherit;
-  font-size: 16.1px;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  font-size: var(--t-body);
+  font-weight: var(--w-normal);
+  color: var(--ink);
+  outline: none;
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.field input:hover:not(:focus) {
+  border-color: var(--muted);
 }
 
 .field input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3.5px var(--accent-soft);
+  border-color: var(--accent-solid);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+.field input::placeholder {
+  color: var(--faint);
+}
+
+/* 唯一的大面积强调色 */
 .btn-submit {
-  height: 43.7px;
-  margin-top: 4.6px;
+  height: 42px;
+  margin-top: var(--s-1);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--r-md);
+  background: var(--accent-solid);
   font-family: inherit;
-  font-size: 16.1px;
-  font-weight: 600;
-  color: #ffffff;
-  background: var(--accent);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
+  font-size: var(--t-body);
+  font-weight: var(--w-semibold);
+  letter-spacing: 0.01em;
+  color: var(--accent-on);
   cursor: pointer;
-  transition: background 160ms ease, transform 120ms ease;
+  transition: background var(--dur) var(--ease);
 }
 
 .btn-submit:hover:not(:disabled) {
-  background: var(--accent-strong);
-}
-
-.btn-submit:active:not(:disabled) {
-  transform: translateY(1px);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-submit:disabled {
-  opacity: 0.65;
+  opacity: 0.55;
   cursor: default;
 }
 
 .error {
   margin: 0;
-  padding: 10.4px 13.8px;
-  font-size: 15px;
-  color: var(--danger);
-  background: var(--danger-soft);
+  padding: 10px var(--s-3);
   border: 1px solid var(--danger-line);
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
+  background: var(--danger-tint);
+  font-size: var(--t-label);
+  font-weight: var(--w-medium);
+  color: var(--danger);
 }
 
 .is-hidden {
   display: none !important;
 }
 
-@media (max-width: 483px) {
+@media (max-width: 480px) {
+  .login-stage {
+    padding: var(--s-4);
+  }
+
   .login-card {
-    padding: 25.3px 20.7px 20.7px;
+    padding: var(--s-6) var(--s-5) var(--s-5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
   }
 }
