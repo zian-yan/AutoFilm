@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::{alist, alist2strm, ani2alist, library_poster, media_server};
+use crate::{alist, alist2strm, ani2alist, library_poster, media_server, mediawarp};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -90,6 +90,12 @@ pub struct Config {
     pub media_servers: Vec<media_server::Config>,
     #[serde(default)]
     pub library_poster_tasks: Vec<library_poster::Config>,
+    /// MediaWarp 反向代理的面板配置。
+    ///
+    /// 这是生成 `config/mediawarp.yaml` 的唯一数据源；保存本文件时由热重载内核
+    /// 渲染成 MediaWarp 原生配置并自动重启代理进程（详见 `mediawarp` 模块）。
+    #[serde(default)]
+    pub mediawarp: mediawarp::MediaWarpConfig,
 }
 
 impl Config {
@@ -136,11 +142,14 @@ impl Config {
 
     /// 是否为空配置（所有业务分区都没有条目）。
     pub fn is_empty(&self) -> bool {
+        // 启用 MediaWarp 托管时即使没有任何调度任务也不能算「空配置」：
+        // 入口会据此在没有 Web 面板时提前退出，那样会连带停掉代理子进程。
         self.alist.is_empty()
             && self.alist2strm_tasks.is_empty()
             && self.ani2alist_tasks.is_empty()
             && self.media_servers.is_empty()
             && self.library_poster_tasks.is_empty()
+            && !self.mediawarp.enable
     }
 
     /// 将配置原子写回磁盘，并保留一份 `.bak` 备份。
@@ -166,6 +175,7 @@ impl Config {
         validate_alist2strm(&self.alist2strm_tasks, &alist_ids, &mut issues);
         validate_ani2alist(&self.ani2alist_tasks, &alist_ids, &mut issues);
         validate_library_poster(&self.library_poster_tasks, &media_server_ids, &mut issues);
+        issues.extend(self.mediawarp.validate());
 
         issues
     }
@@ -228,15 +238,22 @@ fn warn_legacy_alist2strm_fields(value: &serde_yaml::Value) {
 
 /// 通用原子写盘：写临时文件 → 备份旧文件 → rename 覆盖 → 收紧权限。
 pub(crate) fn save_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let yaml = serde_yaml::to_string(value)
+        .map_err(|err| std::io::Error::other(format!("序列化配置失败: {err}")))?;
+    save_atomic_bytes(path, yaml.as_bytes())
+}
+
+/// 原子写入一段已生成的字节内容。
+///
+/// 与 [`save_atomic`] 共用同一套「备份 → 临时文件 → rename」流程，供 MediaWarp
+/// 生成文件与失败回滚使用；生成文件同样包含媒体服务器 API Key，因此权限一致收紧。
+pub(crate) fn save_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         fs::create_dir_all(parent)?;
     }
-
-    let yaml = serde_yaml::to_string(value)
-        .map_err(|err| std::io::Error::other(format!("序列化配置失败: {err}")))?;
 
     if path.exists() {
         let backup = backup_path(path);
@@ -246,7 +263,7 @@ pub(crate) fn save_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Resu
     }
 
     let temp = temp_path(path);
-    write_private_file(&temp, yaml.as_bytes())?;
+    write_private_file(&temp, contents)?;
     fs::rename(&temp, path)?;
     // 覆盖旧文件时 rename 会沿用临时文件权限，这里再兜底收紧一次。
     restrict_permissions(path);

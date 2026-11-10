@@ -1586,6 +1586,124 @@ p {
   }
 }
 
+/* ==================== MediaWarp 服务面板 ==================== */
+/* 只复用既有令牌与语义色，不引入新的强调色；状态卡片与分组表单都保持 L1~L4 层级。 */
+
+.mw-status-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.mw-status-caption {
+  font-size: var(--t-caption);
+  color: var(--muted);
+}
+
+.pill-mw-ok {
+  color: var(--ok);
+  background: var(--ok-tint);
+  border-color: var(--line-strong);
+}
+
+.pill-mw-warn {
+  color: var(--warn);
+  background: var(--warn-tint);
+  border-color: var(--warn-line);
+}
+
+.pill-mw-danger {
+  color: var(--danger);
+  background: var(--danger-tint);
+  border-color: var(--danger-line);
+}
+
+.mw-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s-4) var(--s-5);
+  margin-top: var(--s-5);
+}
+
+.mw-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--line);
+  min-width: 0;
+}
+
+.mw-status-label {
+  font-size: var(--t-caption);
+  font-weight: var(--w-semibold);
+  color: var(--muted);
+}
+
+.mw-status-value {
+  font-size: var(--t-body);
+  color: var(--body);
+  overflow-wrap: anywhere;
+}
+
+.mw-status-error {
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-sm);
+  background: var(--danger-tint);
+  font-size: var(--t-caption);
+  line-height: 1.6;
+  color: var(--danger);
+}
+
+.mw-group + .mw-group {
+  margin-top: var(--s-6);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--line);
+}
+
+.mw-group-title {
+  margin: 0;
+  font-size: var(--t-body);
+  font-weight: var(--w-semibold);
+  color: var(--ink);
+}
+
+.mw-group-sub {
+  margin-top: var(--s-1);
+  font-size: var(--t-caption);
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.mw-group .editor-grid {
+  margin-top: var(--s-4);
+}
+
+.mw-modal-path {
+  margin-bottom: var(--s-3);
+  font-size: var(--t-caption);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.mw-code {
+  max-height: 60vh;
+  margin: 0;
+  padding: var(--s-4);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  font-size: var(--t-caption);
+  line-height: 1.65;
+  color: var(--body);
+  white-space: pre;
+  tab-size: 2;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

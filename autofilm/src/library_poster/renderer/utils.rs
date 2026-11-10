@@ -75,16 +75,6 @@ fn is_suitable_theme_color(color: [u8; 3]) -> bool {
     (0.16..=0.86).contains(&luminance) && saturation >= 0.16
 }
 
-pub fn gradient_background(width: u32, height: u32, color: Rgba<u8>) -> RgbaImage {
-    let left = adjust_brightness(color, 0.48);
-    let right = adjust_brightness(color, 1.32);
-    let width_f = width.max(1) as f32;
-    RgbaImage::from_fn(width, height, |x, _| {
-        let progress = x as f32 / width_f;
-        mix_colors(left, right, progress.powf(0.72))
-    })
-}
-
 pub fn adjust_brightness(color: Rgba<u8>, factor: f32) -> Rgba<u8> {
     Rgba([
         (color[0] as f32 * factor).clamp(0.0, 255.0) as u8,
@@ -92,16 +82,6 @@ pub fn adjust_brightness(color: Rgba<u8>, factor: f32) -> Rgba<u8> {
         (color[2] as f32 * factor).clamp(0.0, 255.0) as u8,
         color[3],
     ])
-}
-
-pub fn mix_colors(left: Rgba<u8>, right: Rgba<u8>, ratio: f32) -> Rgba<u8> {
-    let ratio = ratio.clamp(0.0, 1.0);
-    let mut result = [0; 4];
-    for channel in 0..4 {
-        result[channel] =
-            (left[channel] as f32 * (1.0 - ratio) + right[channel] as f32 * ratio) as u8;
-    }
-    Rgba(result)
 }
 
 pub fn tint(image: &mut RgbaImage, color: Rgba<u8>, strength: f32) {
@@ -166,18 +146,8 @@ pub fn apply_rounded_corners(image: &mut RgbaImage, radius: u32) {
     }
 }
 
-/// 将图片和柔化投影绘制到画布上。
-#[allow(clippy::too_many_arguments)]
-pub fn overlay_with_shadow(
-    canvas: &mut RgbaImage,
-    image: &RgbaImage,
-    x: i64,
-    y: i64,
-    offset_x: i64,
-    offset_y: i64,
-    blur_radius: f32,
-    opacity: u8,
-) {
+/// 生成与图片轮廓一致的柔化投影层，返回投影图与四周扩展的内边距。
+pub fn soft_shadow(image: &RgbaImage, blur_radius: f32, opacity: u8) -> (RgbaImage, i64) {
     let padding = blur_radius.ceil() as u32 * 3;
     let mut shadow = RgbaImage::from_pixel(
         image.width() + padding * 2,
@@ -194,12 +164,27 @@ pub fn overlay_with_shadow(
             Rgba([0, 0, 0, pixel[3].min(opacity)]),
         );
     }
-    let shadow = optimized_blur(&shadow, blur_radius);
+    (optimized_blur(&shadow, blur_radius), i64::from(padding))
+}
+
+/// 将图片和柔化投影绘制到画布上。
+#[allow(clippy::too_many_arguments)]
+pub fn overlay_with_shadow(
+    canvas: &mut RgbaImage,
+    image: &RgbaImage,
+    x: i64,
+    y: i64,
+    offset_x: i64,
+    offset_y: i64,
+    blur_radius: f32,
+    opacity: u8,
+) {
+    let (shadow, padding) = soft_shadow(image, blur_radius, opacity);
     overlay(
         canvas,
         &shadow,
-        x + offset_x - i64::from(padding),
-        y + offset_y - i64::from(padding),
+        x + offset_x - padding,
+        y + offset_y - padding,
     );
     overlay(canvas, image, x, y);
 }
@@ -354,6 +339,87 @@ fn draw_centered_text(
     let shadow_layer = optimized_blur(&shadow_layer, (size * 0.035).max(2.0));
     overlay(canvas, &shadow_layer, 0, 0);
     draw_text_mut(canvas, color, x, y, scale, font, text);
+}
+
+/// 绘制左对齐文本，支持字间距，并附带与居中文本一致的柔和投影。
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_left(
+    canvas: &mut RgbaImage,
+    text: &str,
+    font: &FontArc,
+    x: i32,
+    y: i32,
+    size: f32,
+    color: Rgba<u8>,
+    letter_spacing: f32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let scale = PxScale::from(size);
+    let offset = (size * 0.045).max(2.0) as i32;
+    let mut shadow_layer =
+        RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, 0]));
+    for step in (2..=offset.max(2)).step_by(2) {
+        draw_text_spaced(
+            &mut shadow_layer,
+            text,
+            font,
+            x + step,
+            y + step,
+            scale,
+            Rgba([0, 0, 0, 96]),
+            letter_spacing,
+        );
+    }
+    let shadow_layer = optimized_blur(&shadow_layer, (size * 0.035).max(2.0));
+    overlay(canvas, &shadow_layer, 0, 0);
+    draw_text_spaced(canvas, text, font, x, y, scale, color, letter_spacing);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_spaced(
+    canvas: &mut RgbaImage,
+    text: &str,
+    font: &FontArc,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    color: Rgba<u8>,
+    letter_spacing: f32,
+) {
+    let scaled = font.as_scaled(scale);
+    let mut cursor = x as f32;
+    for character in text.chars() {
+        let advance = scaled.h_advance(scaled.scaled_glyph(character).id);
+        if !character.is_whitespace() {
+            draw_text_mut(
+                canvas,
+                color,
+                cursor.round() as i32,
+                y,
+                scale,
+                font,
+                &character.to_string(),
+            );
+        }
+        cursor += advance + letter_spacing;
+    }
+}
+
+/// 计算带字间距文本的可见宽度。
+pub fn spaced_text_width(font: &FontArc, size: f32, text: &str, letter_spacing: f32) -> i32 {
+    let scaled = font.as_scaled(PxScale::from(size));
+    let advance = text
+        .chars()
+        .map(|character| scaled.h_advance(scaled.scaled_glyph(character).id))
+        .sum::<f32>();
+    let gaps = text.chars().count().saturating_sub(1) as f32;
+    (advance + letter_spacing * gaps).ceil() as i32
+}
+
+pub fn text_line_height(font: &FontArc, size: f32) -> i32 {
+    line_height(font, PxScale::from(size))
 }
 
 fn text_width(font: &FontArc, scale: PxScale, text: &str) -> i32 {

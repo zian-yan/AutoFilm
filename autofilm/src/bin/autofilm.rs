@@ -76,14 +76,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if scheduled_count == 0 {
         warn!("没有可调度的任务");
-        // 面板仍可用来在线补配置，因此只有未启用面板时才提前退出。
-        if !runtime.web_enabled() {
+        // 面板或 MediaWarp 托管都算「有事可做」：后者是常驻子进程，主进程
+        // 一旦退出它也会被一并带走，因此不能按空配置提前结束。
+        if !runtime.web_enabled() && !runtime.mediawarp_enabled() {
             runtime.shutdown().await;
             warn!(
                 config_path = %args.config_path.display(),
                 web_config_path = %args.web_config_path.display(),
-                "没有可调度任务且未启用 Web 管理面板，进程退出；\
-                 请在业务配置中添加任务，或在面板配置中设置 enable=true 后重启"
+                "没有可调度任务，且未启用 Web 管理面板或 MediaWarp 托管，进程退出；\
+                 请在业务配置中添加任务、在面板配置中设置 enable=true，或开启 MediaWarp 托管"
             );
             return Ok(());
         }

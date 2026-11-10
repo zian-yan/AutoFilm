@@ -10,6 +10,7 @@ use crate::{
         http::{Request, Response},
     },
     config::Config,
+    mediawarp,
     schedule::RegisteredTask,
     web_config::WebConfig,
 };
@@ -109,6 +110,9 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         ("POST", "/api/browse") => browse_handler(ctx, request),
         ("POST", "/api/logout") => logout_handler(ctx, request),
         ("POST", "/api/reload") => reload_handler(ctx),
+        ("GET", "/api/mediawarp/preview") => mediawarp_preview_handler(ctx),
+        ("POST", "/api/mediawarp/restart") => mediawarp_restart_handler(ctx),
+        ("POST", "/api/mediawarp/import") => mediawarp_import_handler(ctx),
         (_, path) if path.starts_with("/api/") => {
             Response::json(404, &json!({ "message": "未知接口" }))
         }
@@ -800,5 +804,68 @@ fn finish(receiver: std_mpsc::Receiver<ApplyOutcome>, label: &str) -> Response {
         ApplyOutcome::Failed(message) => {
             Response::json(500, &json!({ "message": message, "errors": [] }))
         }
+    }
+}
+
+/// 预览当前已生效配置会生成的 MediaWarp YAML（不写盘）。
+fn mediawarp_preview_handler(ctx: &AdminContext) -> Response {
+    let config = ctx.store.snapshot().config.mediawarp;
+    let path = ctx.mediawarp.resolve_path(&config.config_path);
+    match mediawarp::render_yaml(&config) {
+        Ok(yaml) => Response::json(
+            200,
+            &json!({ "yaml": yaml, "path": path.display().to_string() }),
+        ),
+        Err(message) => Response::json(500, &json!({ "message": message })),
+    }
+}
+
+/// 面板「立即重启」：与配置保存共用热重载内核的串行命令通道，避免并发抢端口。
+fn mediawarp_restart_handler(ctx: &AdminContext) -> Response {
+    let (reply, receiver) = std_mpsc::sync_channel(1);
+    if ctx
+        .commands
+        .blocking_send(AdminCommand::MediaWarpRestart { reply })
+        .is_err()
+    {
+        return Response::text(503, "配置内核已停止，无法重启 MediaWarp");
+    }
+
+    let status = || ctx.mediawarp.status_json();
+    match receiver.recv_timeout(APPLY_TIMEOUT) {
+        Ok(Ok(note)) => Response::json(200, &json!({ "message": note, "status": status() })),
+        Ok(Err(message)) => Response::json(500, &json!({ "message": message, "status": status() })),
+        Err(std_mpsc::RecvTimeoutError::Timeout) => {
+            Response::text(503, "等待 MediaWarp 重启超时，请稍后刷新面板确认服务状态")
+        }
+        Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+            Response::text(500, "等待 MediaWarp 重启结果失败")
+        }
+    }
+}
+
+/// 把生成文件（可能是外部部署或手工编辑过的）导回面板表单。
+///
+/// 只返回解析后的配置对象，由前端合并进草稿；用户点「保存」才真正写盘并重启，
+/// 因此导入本身不会中断正在播放的请求。
+fn mediawarp_import_handler(ctx: &AdminContext) -> Response {
+    let current = ctx.store.snapshot().config.mediawarp;
+    let path = ctx.mediawarp.resolve_path(&current.config_path);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            return Response::json(
+                404,
+                &json!({ "message": format!("读取 {} 失败: {err}", path.display()) }),
+            );
+        }
+    };
+
+    match mediawarp::parse_into(&text, &current) {
+        Ok(config) => Response::json(
+            200,
+            &json!({ "config": config, "path": path.display().to_string() }),
+        ),
+        Err(message) => Response::json(422, &json!({ "message": message })),
     }
 }

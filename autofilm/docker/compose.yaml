@@ -10,12 +10,19 @@ services:
       # （优先级：命令行 --timezone > TZ > 系统时区 > UTC）
       TZ: Asia/Shanghai
     volumes:
-      - ./config:/config # 配置目录：业务配置 config.yaml 与面板配置 web.yaml 都在这里，两份都允许为空或不存在
-      - ./logs:/logs # 日志目录，容器运行时会在该目录下生成日志文件
+      # 配置目录：业务配置 config.yaml、面板配置 web.yaml，以及由面板自动生成的
+      # mediawarp.yaml（MediaWarp 的 config.yaml）都在这里，随宿主机目录持久化。
+      - ./config:/config
+      - ./logs:/logs # 日志目录：AutoFilm 按天日志与 MediaWarp 的 access/service 日志都写在这里
       - ./fonts:/fonts # 字体目录，library_poster_tasks 需要使用，若不启用该任务则无需配置（也可以直接将字体文件放到`/config`目录下，根据配置文件自由选择）
       - ./media:/media # 输出目录，不一定需要映射`/media`，根据配置文件自行选择
-    # 启用 Web 管理面板时再放开端口映射；同时在 /config/web.yaml 中设置
+    # 镜像内同时包含 AutoFilm 与 MediaWarp 两个二进制：AutoFilm 是主进程，
+    # 在面板「MediaWarp」页开启托管后会拉起代理子进程并监听 mediawarp.port（默认 9000）。
+    # 客户端请访问 MediaWarp 的端口，不要再直连 Emby/Jellyfin。
+    #
+    # 启用 Web 管理面板时再放开 8080；同时在 /config/web.yaml 中设置
     # enable=true、listen=0.0.0.0:8080，并务必配置 password（非回环地址必须认证）。
-    # ports:
-    #   - "8080:8080"
+    ports:
+      - "9000:9000" # MediaWarp 反向代理（端口需与面板 mediawarp.port 一致）
+    # - "8080:8080" # AutoFilm Web 管理面板（按需放开）
 

@@ -46,6 +46,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::{Config, ValidationIssue},
+    mediawarp::Supervisor,
     schedule,
     web_config::WebConfig,
 };
@@ -54,7 +55,10 @@ use crate::{
 const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 等待一次热重载完成的最长时间，超时后连接线程放弃等待并返回 503。
-pub(crate) const APPLY_TIMEOUT: Duration = Duration::from_secs(20);
+///
+/// 业务配置保存现在可能连带一次 MediaWarp 重启（优雅停止 5s + 启动健康检查
+/// 10s，均可在面板里调整），因此留出 45s 余量，避免慢一点就误报 503。
+pub(crate) const APPLY_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// 热重载的触发来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +109,8 @@ pub struct ApplyReport {
     /// 本次保存作用于哪份配置：`business` 或 `web`。
     pub scope: &'static str,
     pub warnings: Vec<String>,
+    /// 成功但值得告知用户的信息（例如「已自动重启 MediaWarp」），前端按成功提示展示。
+    pub notes: Vec<String>,
     /// 因正在运行而被保护（保留旧配置）的任务键。
     pub locked_tasks: Vec<String>,
 }
@@ -127,6 +133,8 @@ pub struct AdminContext {
     pub web_store: Arc<WebStore>,
     /// 当前面板监听句柄；保存 `web.yaml` 时按新配置热重绑。
     pub web: Mutex<Option<WebHandle>>,
+    /// MediaWarp 反向代理子进程的托管句柄；业务配置保存时按新配置热重启。
+    pub mediawarp: Arc<Supervisor>,
     pub guard: auth::LoginGuard,
     /// 登录页签发/校验的会话表（仅存内存，重启即失效）。
     pub sessions: auth::SessionStore,
@@ -229,6 +237,8 @@ impl AdminContext {
         if let serde_json::Value::Object(map) = &mut runtime {
             map.insert("next_runs".to_string(), self.next_runs_json());
             map.insert("running".to_string(), self.running_json());
+            // 服务状态随 3 秒轮询一起下发，MediaWarp 页的状态卡片无需单独接口。
+            map.insert("mediawarp".to_string(), self.mediawarp.status_json());
         }
         runtime
     }
@@ -247,6 +257,12 @@ pub enum AdminCommand {
         web: WebConfig,
         source: ReloadSource,
         reply: std_mpsc::SyncSender<ApplyOutcome>,
+    },
+    /// 面板「立即重启」：按当前已生效的配置强制重启 MediaWarp。
+    ///
+    /// 与 Apply 共用同一条串行命令通道，因此不会与配置保存同时抢端口。
+    MediaWarpRestart {
+        reply: std_mpsc::SyncSender<Result<String, String>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -286,10 +302,20 @@ impl Runtime {
         let web_store = Arc::new(WebStore::new(web_config_path.clone(), web_config.clone()));
         let (command_tx, command_rx) = mpsc::channel::<AdminCommand>(16);
 
+        // MediaWarp 生成文件与 config.yaml 同目录：本地是 config/mediawarp.yaml，
+        // 容器里 config.yaml 位于 /config，因此自然落到 /config/mediawarp.yaml。
+        let mediawarp_base = config_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let mediawarp = Arc::new(Supervisor::new(mediawarp_base));
+
         let ctx = Arc::new(AdminContext {
             store,
             web_store,
             web: Mutex::new(None),
+            mediawarp: mediawarp.clone(),
             guard: auth::LoginGuard::default(),
             sessions: auth::SessionStore::new(),
             schema: schema::schema(),
@@ -328,6 +354,16 @@ impl Runtime {
             info!("Web 管理面板未启用（web.enable = false）");
         }
 
+        // 按 config.yaml 的 mediawarp 段生成配置文件并拉起代理子进程。
+        // 这里失败只告警、不终止启动：否则一个写错的二进制路径会让用户连面板
+        // 都打不开，反而没法修。状态会留在 failed 并在面板上给出原因。
+        let initial_mediawarp = ctx.store.snapshot().config.mediawarp;
+        match mediawarp.bootstrap(&initial_mediawarp).await {
+            Ok(report) if report.changed => info!(note = %report.note, "MediaWarp 托管已初始化"),
+            Ok(_) => info!("MediaWarp 配置未变化，跳过初始化重启"),
+            Err(err) => warn!(error = %err, "MediaWarp 初始化失败，可在面板修正后保存重试"),
+        }
+
         let supervisor = tokio::spawn(supervise(ctx.clone(), command_rx, Some(scheduler), tz));
 
         // 监听线程常驻，由 watch_loop 每轮读取实时 watch_file 决定是否检测，
@@ -347,7 +383,12 @@ impl Runtime {
         self.ctx.web_enabled()
     }
 
-    /// 停止面板、监听线程与调度器。
+    /// 是否启用了 MediaWarp 托管（决定「没有调度任务」时能否提前退出）。
+    pub fn mediawarp_enabled(&self) -> bool {
+        self.ctx.mediawarp.managed()
+    }
+
+    /// 停止面板、MediaWarp 子进程、监听线程与调度器。
     pub async fn shutdown(&mut self) {
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
@@ -361,6 +402,8 @@ impl Runtime {
         if let Some(mut handle) = web {
             handle.stop();
         }
+        // 先带走子进程再退出，避免容器里留下占用 9000 端口的孤儿进程。
+        self.ctx.mediawarp.shutdown().await;
 
         let (reply, receiver) = oneshot::channel();
         if self
@@ -398,6 +441,11 @@ async fn supervise(
             AdminCommand::ApplyWeb { web, source, reply } => {
                 let outcome = apply_web(&ctx, web, source);
                 let _ = reply.send(outcome);
+            }
+            AdminCommand::MediaWarpRestart { reply } => {
+                let config = ctx.store.snapshot().config.mediawarp;
+                let outcome = ctx.mediawarp.restart_now(&config).await;
+                let _ = reply.send(outcome.map(|report| report.note));
             }
             AdminCommand::Shutdown { reply } => {
                 if let Some(mut scheduler) = current.take() {
@@ -490,6 +538,20 @@ async fn apply(
         return ApplyOutcome::Failed(message);
     }
 
+    // MediaWarp 事务放在写 config.yaml 之前：代理服务先完成「原子写生成文件 →
+    // 优雅停旧 → 拉起新进程 → 健康检查」，失败时内部已自行回滚，这里只需丢弃
+    // 尚未启用的新调度器；两份配置都不会留下半成品。
+    let mut mediawarp_note: Option<String> = None;
+    match ctx.mediawarp.commit(&config.mediawarp).await {
+        Ok(report) if report.changed => mediawarp_note = Some(report.note),
+        Ok(_) => {}
+        Err(message) => {
+            let _ = scheduler.shutdown().await;
+            record_failure(ctx, message.clone(), source);
+            return ApplyOutcome::Failed(message);
+        }
+    }
+
     // 只有面板保存才写盘；外部编辑与手工重新加载只采用磁盘内容，
     // 避免把用户写的注释与排版抹掉。
     let version = if source == ReloadSource::Panel {
@@ -498,6 +560,8 @@ async fn apply(
             Err(err) => {
                 let message = format!("写入业务配置文件失败: {err}");
                 let _ = scheduler.shutdown().await;
+                // 生成文件与代理进程已经切换，这里必须一并回滚。
+                ctx.mediawarp.undo().await;
                 record_failure(ctx, message.clone(), source);
                 return ApplyOutcome::Failed(message);
             }
@@ -505,6 +569,9 @@ async fn apply(
     } else {
         ctx.store.adopt(config)
     };
+
+    // config.yaml 已落盘，整次事务完成，丢弃 MediaWarp 的回滚现场。
+    ctx.mediawarp.finish().await;
 
     // 新调度器已经就绪后再停掉旧的；正在执行的任务不会被中断，
     // 它们持有的是启动时的配置快照，下一次触发才会使用新配置。
@@ -536,6 +603,7 @@ async fn apply(
             locked_tasks.join("、")
         )]
     };
+    let notes = mediawarp_note.into_iter().collect::<Vec<_>>();
     let report = ApplyReport {
         version,
         scheduled_count,
@@ -543,6 +611,7 @@ async fn apply(
         source: source.as_str().to_string(),
         scope: "business",
         warnings,
+        notes,
         locked_tasks,
     };
 
@@ -695,6 +764,7 @@ fn apply_web(ctx: &Arc<AdminContext>, web: WebConfig, source: ReloadSource) -> A
         source: source.as_str().to_string(),
         scope: "web",
         warnings: notes,
+        notes: Vec::new(),
         locked_tasks: Vec::new(),
     };
 
@@ -905,6 +975,7 @@ alist2strm_tasks:
             store: Arc::new(ConfigStore::new(dir.join("config.yaml"), config)),
             web_store: Arc::new(WebStore::new(dir.join("web.yaml"), WebConfig::default())),
             web: Mutex::new(None),
+            mediawarp: Arc::new(Supervisor::new(dir.to_path_buf())),
             guard: auth::LoginGuard::default(),
             sessions: auth::SessionStore::new(),
             schema: serde_json::Value::Null,

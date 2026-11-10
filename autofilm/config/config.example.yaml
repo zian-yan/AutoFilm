@@ -134,3 +134,50 @@ library_poster_tasks:
         title: 电影
         subtitle: MOVIE
         sort: random
+
+# MediaWarp 反向代理（前置于 Emby / Jellyfin，让 HTTPStrm 走 302 直链播放）
+# 这一段是面板「MediaWarp」页的数据源，保存在 config.yaml；保存后面板会生成
+# 同目录的 mediawarp.yaml 并自动重启代理服务（容器内为 /config/mediawarp.yaml）。
+# 省略整段时使用内置默认值且 enable=false。
+mediawarp:
+  enable: true                              # 由 AutoFilm 托管子进程；关闭时只生成配置文件、不自动重启
+  config_path: mediawarp.yaml               # 相对 config.yaml 所在目录；也可填绝对路径
+  binary: mediawarp                        # 可执行文件，只写名字时按 PATH 查找（容器内 /usr/local/bin/mediawarp）
+  extra_args: []                           # 追加在 --config 之后的启动参数，如 ["--debug"]
+  startup_timeout_secs: 10                 # 重启后等待端口就绪的秒数
+  stop_timeout_secs: 5                     # 旧进程优雅退出的等待秒数
+
+  port: 9000                               # MediaWarp 监听端口（需在 compose 中映射出来）
+  server:
+    type: Emby                            # Emby / Jellyfin（区分大小写）
+    addr: http://emby:8096                # 上游媒体服务器地址
+    auth: your-emby-api-key               # 控制台 -> 高级 -> API 密钥
+  log:
+    access:
+      console: true
+      file: false
+    service:
+      console: true
+      file: true
+  cache:
+    enable: true
+    http_strm_ttl: 1m                     # Go 时长格式：0 / 300ms / 1m / 2h45m；0 表示关闭
+    image_ttl: 10m
+    subtitle_ttl: 2h
+  client:
+    enable: false                        # 按 User-Agent 关键字过滤客户端
+    mode: BlackList                      # WhiteList / BlackList
+    list:
+      - Fileball
+      - Infuse
+  http_strm:
+    enable: true
+    proxy: false                         # true 时允许串流 / 转码流量经过媒体服务器
+    final_url: true                      # 重定向前解析最终地址
+    allow_loopback: false                # SSRF 防护；同机 Alist 直连才设为 true
+    compatibility_mode: false
+    hide_embedded_subtitles: false       # 对命中的 Strm 隐藏内嵌字幕流
+    hide_embedded_subtitles_clients: []  # 留空对所有客户端生效，如 ["Mozilla"]
+    prefix_list:                         # 媒体服务器内 Strm 文件的路径前缀
+      - /media/strm/http
+      - /media/strm/https

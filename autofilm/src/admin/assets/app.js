@@ -390,6 +390,29 @@ async function requestSaveWeb(payload) {
   return { response, data };
 }
 
+/** MediaWarp：预览生成文件（只读）。 */
+async function requestMediaWarpPreview() {
+  const response = await fetch('/api/mediawarp/preview', {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (redirectIfUnauthorized(response)) return { response, data: {} };
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
+async function requestMediaWarpAction(action) {
+  const response = await fetch(`/api/mediawarp/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
+    body: '{}',
+    cache: 'no-store',
+  });
+  if (redirectIfUnauthorized(response)) return { response, data: {} };
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+}
+
 async function requestRun(module, id) {
   const response = await fetch('/api/run', {
     method: 'POST',
@@ -554,8 +577,13 @@ function render() {
 }
 
 function renderSection(container, section, heading) {
-  if (section.single) renderSingleSection(container, section, heading);
-  else renderListSection(container, section, heading);
+  if (section.widget === 'mediawarp') {
+    renderMediaWarpSection(container, section, heading);
+  } else if (section.single) {
+    renderSingleSection(container, section, heading);
+  } else {
+    renderListSection(container, section, heading);
+  }
 }
 
 /* ---------------- 渲染：卡片 ---------------- */
@@ -588,6 +616,227 @@ function renderSingleSection(container, section, heading) {
   body.appendChild(grid);
   wrapper.appendChild(body);
   container.appendChild(wrapper);
+}
+
+/* ---------------- MediaWarp 专属页面 ---------------- */
+
+const MEDIAWARP_PHASES = {
+  disabled: { label: '未托管', kind: 'neutral' },
+  stopped: { label: '已停止', kind: 'warn' },
+  starting: { label: '重启中…', kind: 'warn' },
+  running: { label: '运行中', kind: 'ok' },
+  failed: { label: '异常', kind: 'danger' },
+};
+const MEDIAWARP_MANAGEMENT_KEYS = [
+  'enable',
+  'config_path',
+  'binary',
+  'extra_args',
+  'startup_timeout_secs',
+  'stop_timeout_secs',
+];
+let mediawarpModal = null;
+
+/** 运行状态卡片：只就地刷新内容，不整页重绘，避免打断正在输入的表单。 */
+function syncMediaWarpStatus() {
+  const host = byId('mediawarp-status');
+  if (!host) return;
+  const info = (state.runtime && state.runtime.mediawarp) || {};
+  const phase = MEDIAWARP_PHASES[info.phase] || MEDIAWARP_PHASES.disabled;
+
+  host.textContent = '';
+  const head = element('div', 'mw-status-head');
+  head.appendChild(
+    element(
+      'span',
+      phase.kind === 'neutral' ? 'pill' : `pill pill-mw-${phase.kind}`,
+      phase.label,
+    ),
+  );
+  head.appendChild(
+    element(
+      'span',
+      'mw-status-caption',
+      info.enabled ? `监听端口 ${info.port || '—'}` : '托管未启用：保存只写配置文件，不会自动重启',
+    ),
+  );
+  host.appendChild(head);
+
+  const rows = [
+    ['进程 PID', info.pid == null ? '—' : String(info.pid)],
+    ['可执行文件', info.binary || '—'],
+    ['端口健康检查', info.healthy ? '通过' : '未通过'],
+    ['累计重启', String(info.restart_count || 0)],
+    ['上次重启', info.last_restart_at || '—'],
+    ['生成文件', info.config_path || '—'],
+    ['文件与面板一致', info.file_in_sync ? '是' : '否'],
+  ];
+  const grid = element('div', 'mw-status-grid');
+  for (const [label, value] of rows) {
+    const cell = element('div', 'mw-status-item');
+    cell.appendChild(element('span', 'mw-status-label', label));
+    const valueNode = element('span', 'mw-status-value', value);
+    if (label === '生成文件' || label === '可执行文件') valueNode.classList.add('mono');
+    cell.appendChild(valueNode);
+    grid.appendChild(cell);
+  }
+  host.appendChild(grid);
+
+  if (info.last_error) {
+    host.appendChild(element('p', 'mw-status-error', info.last_error));
+  }
+
+  const restart = byId('mw-restart');
+  if (restart) {
+    restart.disabled = !info.enabled || info.phase === 'starting';
+    restart.title = info.enabled ? '按当前已生效的配置强制重启代理服务' : '请先启用托管并保存';
+  }
+}
+
+function renderMediaWarpSection(container, section, heading) {
+  const statusCard = element('section', 'card');
+  statusCard.appendChild(
+    cardHead('服务状态', '每 3 秒自动刷新；配置保存后自动写入文件、重启服务并做端口健康检查', null),
+  );
+  const statusBody = element('div', 'card-body padded');
+  const statusHost = element('div', 'mw-status');
+  statusHost.id = 'mediawarp-status';
+  statusBody.appendChild(statusHost);
+  statusCard.appendChild(statusBody);
+  container.appendChild(statusCard);
+
+  const wrapper = element('section', 'card');
+  const actions = element('div', 'card-actions');
+  const restart = button('btn btn-ghost btn-small', '立即重启', 'refresh', () =>
+    restartMediaWarp(),
+  );
+  restart.id = 'mw-restart';
+  actions.appendChild(restart);
+  actions.appendChild(
+    button('btn btn-ghost btn-small', '预览配置', 'file-text', () => previewMediaWarp()),
+  );
+  actions.appendChild(
+    button('btn btn-ghost btn-small', '从文件导入', 'folder', () => importMediaWarp()),
+  );
+  actions.appendChild(
+    button('btn btn-primary btn-small', '保存并重启', 'save', () => save()),
+  );
+  wrapper.appendChild(cardHead(heading || section.item_label, '', actions));
+
+  const body = element('div', 'card-body padded');
+  const data = sectionData(section) || {};
+  for (const group of section.groups || []) {
+    const block = element('div', 'mw-group');
+    block.appendChild(element('h3', 'mw-group-title', group.title));
+    if (group.subtitle) block.appendChild(element('p', 'mw-group-sub', group.subtitle));
+    const grid = element('div', 'editor-grid');
+    for (const field of group.fields || []) {
+      const node = renderField(section, data, -1, field);
+      if (node) grid.appendChild(node);
+    }
+    block.appendChild(grid);
+    body.appendChild(block);
+  }
+  wrapper.appendChild(body);
+  container.appendChild(wrapper);
+  syncMediaWarpStatus();
+}
+
+async function restartMediaWarp() {
+  if (state.saving) return;
+  const restart = byId('mw-restart');
+  if (restart) restart.disabled = true;
+  try {
+    const { response, data } = await requestMediaWarpAction('restart');
+    if (data.status) state.runtime.mediawarp = data.status;
+    if (response.ok) {
+      toast('ok', data.message || 'MediaWarp 已重启');
+      clearAlert();
+    } else {
+      const message = data.message || `重启失败（HTTP ${response.status}）`;
+      showAlert('error', message);
+      toast('error', message);
+    }
+  } catch (err) {
+    toast('error', `重启失败：${err.message}`);
+  }
+  syncMediaWarpStatus();
+}
+
+async function previewMediaWarp() {
+  try {
+    const { response, data } = await requestMediaWarpPreview();
+    if (!response.ok) {
+      toast('error', data.message || `读取失败（HTTP ${response.status}）`);
+      return;
+    }
+    openMediaWarpModal('生成的 MediaWarp 配置', data.path || '', data.yaml || '');
+  } catch (err) {
+    toast('error', `读取失败：${err.message}`);
+  }
+}
+
+function openMediaWarpModal(title, path, yaml) {
+  closeMediaWarpModal();
+  const mask = element('div', 'modal-mask');
+  const modal = element('div', 'modal modal-editor');
+
+  const head = element('div', 'modal-head');
+  head.appendChild(element('span', 'modal-title', title));
+  head.appendChild(iconButton('', 'close', '关闭', () => closeMediaWarpModal()));
+  modal.appendChild(head);
+
+  const body = element('div', 'modal-body');
+  body.appendChild(element('p', 'mw-modal-path mono', path));
+  body.appendChild(element('pre', 'mw-code mono', yaml));
+  modal.appendChild(body);
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+
+  const onKeydown = (event) => {
+    if (event.key === 'Escape') closeMediaWarpModal();
+  };
+  window.addEventListener('keydown', onKeydown);
+  mask.addEventListener('click', (event) => {
+    if (event.target === mask) closeMediaWarpModal();
+  });
+  mediawarpModal = { mask, onKeydown };
+}
+
+function closeMediaWarpModal() {
+  if (!mediawarpModal) return;
+  window.removeEventListener('keydown', mediawarpModal.onKeydown);
+  mediawarpModal.mask.remove();
+  mediawarpModal = null;
+}
+
+async function importMediaWarp() {
+  if (
+    state.dirty &&
+    !window.confirm('当前有未保存的改动，导入会覆盖 MediaWarp 表单（其它分区不受影响）。继续？')
+  ) {
+    return;
+  }
+  try {
+    const { response, data } = await requestMediaWarpAction('import');
+    if (!response.ok) {
+      const message = data.message || `导入失败（HTTP ${response.status}）`;
+      showAlert('error', message);
+      toast('error', message);
+      return;
+    }
+    if (!state.config) return;
+    const target = state.config.mediawarp || (state.config.mediawarp = {});
+    // 托管参数属于 AutoFilm，不能被外部文件覆盖；只导入 MediaWarp 原生字段。
+    for (const [key, value] of Object.entries(data.config || {})) {
+      if (!MEDIAWARP_MANAGEMENT_KEYS.includes(key)) target[key] = value;
+    }
+    markDirty();
+    render();
+    toast('ok', `已从 ${data.path || '生成文件'} 导入，请确认后点击「保存并重启」`);
+  } catch (err) {
+    toast('error', `导入失败：${err.message}`);
+  }
 }
 
 /* ---------------- 渲染：列表分区（表格 + 展开编辑） ---------------- */
@@ -1032,7 +1281,10 @@ function controlFor(section, item, field, controlId, wrapper) {
         input.type = hidden ? 'text' : 'password';
         toggle.textContent = hidden ? '隐藏' : '显示';
       });
-      input.addEventListener('input', () => commit(emptyToNull(input.value)));
+      // MediaWarp 的 server.auth 是非空字符串字段，空值必须写成 "" 而不是 null。
+      input.addEventListener('input', () =>
+        commit(field.keep_empty ? input.value.trim() : emptyToNull(input.value)),
+      );
       row.appendChild(input);
       row.appendChild(toggle);
       wrapper.appendChild(row);
@@ -1595,6 +1847,7 @@ function syncRuntimeUi() {
   syncRunButtons();
   syncNextRuns();
   syncLocks();
+  syncMediaWarpStatus();
 }
 
 async function runTask(section, item) {
@@ -1872,6 +2125,7 @@ async function save() {
 
   try {
     const notes = [];
+    const okNotes = [];
     let businessOk = false;
     let webOk = false;
 
@@ -1888,6 +2142,7 @@ async function save() {
       state.version = data.version;
       state.savedBusiness = JSON.stringify(businessPayload());
       notes.push(...((data.report && data.report.warnings) || []));
+      okNotes.push(...((data.report && data.report.notes) || []));
     }
 
     if (webDirty) {
@@ -1903,10 +2158,13 @@ async function save() {
       state.webVersion = data.version;
       state.savedWeb = JSON.stringify(webPayload());
       notes.push(...((data.report && data.report.warnings) || []));
+      okNotes.push(...((data.report && data.report.notes) || []));
     }
 
     syncDirty();
     toast('ok', businessOk && webOk ? '两份配置已保存并实时生效' : '配置已保存并实时生效');
+    // 自动重启这类「成功但值得告知」的信息用成功提示，不混入警告。
+    for (const note of okNotes) toast('ok', note);
     if (notes.length) {
       for (const note of notes) toast('warn', note);
       showAlert('warn', '配置已保存并实时生效', notes);

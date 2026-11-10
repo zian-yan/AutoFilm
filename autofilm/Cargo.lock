@@ -215,6 +215,7 @@ dependencies = [
  "iana-time-zone",
  "image",
  "imageproc",
+ "libc",
  "rand 0.10.3",
  "regex",
  "reqwest",

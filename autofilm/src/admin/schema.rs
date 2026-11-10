@@ -218,7 +218,7 @@ pub fn schema() -> Value {
                     { "key": "title_font", "label": "主标题字体", "kind": "text", "required": true, "placeholder": "/fonts/ch.ttf" },
                     { "key": "subtitle_font", "label": "副标题字体", "kind": "text", "required": true, "placeholder": "/fonts/en.otf" },
                     { "key": "render.style", "label": "渲染风格", "kind": "select", "options": [
-                        { "value": "collage", "label": "拼贴 Collage" },
+                        { "value": "collage", "label": "海报墙 Collage" },
                         { "value": "card", "label": "卡片 Card" },
                         { "value": "split", "label": "分栏 Split" },
                         { "value": "blur", "label": "模糊 Blur" }
@@ -246,6 +246,86 @@ pub fn schema() -> Value {
                         { "name": "", "title": "", "subtitle": "", "sort": "date_last_content_added" }
                     ]
                 }
+            },
+            {
+                // MediaWarp：数据仍在 config.yaml（复用业务配置的保存与版本控制），
+                // 但页面由 app.js 按 widget 标记定制渲染——多一张服务状态卡片，
+                // 并把 30 多个原生字段按 groups 分组，避免一屏铺满输入框。
+                "key": "mediawarp",
+                "title": "MediaWarp",
+                "subtitle": "前置于 Emby / Jellyfin 的反向代理（HTTPStrm 302 直链）；本页配置保存后自动生成 config/mediawarp.yaml 并重启代理服务",
+                "item_label": "MediaWarp 配置",
+                "single": true,
+                "addable": false,
+                "removable": false,
+                "widget": "mediawarp",
+                "groups": [
+                    {
+                        "title": "服务托管",
+                        "subtitle": "AutoFilm 负责生成配置并管理子进程；关闭托管时只写配置文件，不自动重启",
+                        "fields": [
+                            { "key": "enable", "label": "启用托管（保存后自动重启）", "kind": "bool", "help": "开启后 AutoFilm 会拉起 MediaWarp 子进程；每次配置变化自动重启并通过端口健康检查。关闭时仅生成配置文件，供外部部署方式使用" },
+                            { "key": "config_path", "label": "生成配置文件路径", "kind": "text", "required": true, "placeholder": "mediawarp.yaml", "help": "相对 config.yaml 所在目录；默认 mediawarp.yaml，即 config/mediawarp.yaml（容器内 /config/mediawarp.yaml），也可填绝对路径" },
+                            { "key": "binary", "label": "可执行文件", "kind": "text", "required": true, "placeholder": "mediawarp", "help": "只写名字时按 PATH 查找；集成镜像内置 /usr/local/bin/mediawarp" },
+                            { "key": "extra_args", "label": "附加启动参数", "kind": "list", "placeholder": "--debug", "help": "逗号分隔，追加在 --config 之后" },
+                            { "key": "startup_timeout_secs", "label": "启动等待（秒）", "kind": "number", "min": 1, "max": 60, "step": 1, "help": "重启后等待端口就绪的最长时间，超时自动回滚" },
+                            { "key": "stop_timeout_secs", "label": "停止宽限（秒）", "kind": "number", "min": 1, "max": 60, "step": 1, "help": "先发 SIGTERM 让 Go 侧优雅退出，超时才强制结束" }
+                        ]
+                    },
+                    {
+                        "title": "监听端口与上游媒体服务器",
+                        "subtitle": "对应 MediaWarp 的 port / server 段",
+                        "fields": [
+                            { "key": "port", "label": "监听端口", "kind": "number", "min": 1, "max": 65535, "step": 1, "help": "客户端应访问 MediaWarp 的这个端口，而不是直连 Emby/Jellyfin" },
+                            { "key": "server.type", "label": "媒体服务器类型", "kind": "select", "required": true, "options": [
+                                { "value": "Emby", "label": "Emby" },
+                                { "value": "Jellyfin", "label": "Jellyfin" }
+                            ] },
+                            { "key": "server.addr", "label": "上游服务器地址", "kind": "text", "required": true, "placeholder": "http://emby:8096", "help": "需为带主机名的 http(s) 完整地址" },
+                            { "key": "server.auth", "label": "API 密钥", "kind": "secret", "keep_empty": true, "help": "Emby / Jellyfin 控制台 → 高级 → API 密钥" }
+                        ]
+                    },
+                    {
+                        "title": "日志与缓存",
+                        "subtitle": "对应 MediaWarp 的 log / cache 段；TTL 为 Go 时长格式，0 表示关闭该项缓存",
+                        "fields": [
+                            { "key": "log.access.console", "label": "访问日志 · 终端", "kind": "bool" },
+                            { "key": "log.access.file", "label": "访问日志 · 文件", "kind": "bool" },
+                            { "key": "log.service.console", "label": "服务日志 · 终端", "kind": "bool" },
+                            { "key": "log.service.file", "label": "服务日志 · 文件", "kind": "bool" },
+                            { "key": "cache.enable", "label": "启用缓存", "kind": "bool" },
+                            { "key": "cache.http_strm_ttl", "label": "302 结果缓存", "kind": "text", "placeholder": "1m", "help": "仅当 final_url 开启时生效" },
+                            { "key": "cache.image_ttl", "label": "图片缓存", "kind": "text", "placeholder": "10m" },
+                            { "key": "cache.subtitle_ttl", "label": "字幕缓存", "kind": "text", "placeholder": "2h" }
+                        ]
+                    },
+                    {
+                        "title": "客户端过滤",
+                        "subtitle": "按 User-Agent 关键字包含关系匹配",
+                        "fields": [
+                            { "key": "client.enable", "label": "启用过滤", "kind": "bool" },
+                            { "key": "client.mode", "label": "名单模式", "kind": "select", "options": [
+                                { "value": "BlackList", "label": "黑名单（命中则拒绝）" },
+                                { "value": "WhiteList", "label": "白名单（仅命中放行）" }
+                            ] },
+                            { "key": "client.list", "label": "客户端关键字", "kind": "list", "placeholder": "Fileball, Infuse", "help": "逗号分隔；白名单模式下不能为空" }
+                        ]
+                    },
+                    {
+                        "title": "HTTPStrm 302 直链",
+                        "subtitle": "对应 MediaWarp 的 http_strm 段；prefix_list 是媒体服务器内 Strm 文件的路径前缀",
+                        "fields": [
+                            { "key": "http_strm.enable", "label": "启用 HTTPStrm 重定向", "kind": "bool" },
+                            { "key": "http_strm.proxy", "label": "允许经过媒体服务器", "kind": "bool", "help": "开启后保留串流 / 转码能力，但流量会经过 Emby/Jellyfin" },
+                            { "key": "http_strm.final_url", "label": "解析最终地址", "kind": "bool", "help": "重定向前先解析出最终 URL，减少客户端重定向次数" },
+                            { "key": "http_strm.allow_loopback", "label": "允许环回目标", "kind": "bool", "help": "SSRF 防护：默认拒绝 127.0.0.1 / ::1；仅同机 Alist 直连且确认无敏感服务时开启" },
+                            { "key": "http_strm.compatibility_mode", "label": "兼容模式", "kind": "bool", "help": "用更兼容但效率较低的方式获取最终 URL" },
+                            { "key": "http_strm.hide_embedded_subtitles", "label": "隐藏内嵌字幕流", "kind": "bool", "help": "避免媒体服务器为提取字幕而整片下载远程文件" },
+                            { "key": "http_strm.hide_embedded_subtitles_clients", "label": "隐藏字幕 · 客户端", "kind": "list", "placeholder": "Mozilla, Polaris", "help": "逗号分隔的 User-Agent 关键字；留空对所有客户端生效" },
+                            { "key": "http_strm.prefix_list", "label": "Strm 路径前缀", "kind": "list", "placeholder": "/media/strm/http, /media/strm/https", "help": "逗号分隔，每项需以 / 开头" }
+                        ]
+                    }
+                ]
             }
         ],
         // 面板配置单独下发：它保存在 web.yaml，与业务配置的版本号、保存接口

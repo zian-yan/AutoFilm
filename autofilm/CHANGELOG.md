@@ -7,6 +7,22 @@
 
 > 本仓库从 `v1.0.0` 起重置版本号，作为独立发布线的起点；此前上游（AkimioJR/AutoFilm）的历史版本请查阅 Git 提交记录与上游 Release。
 
+## [Unreleased]
+
+### ✨ 新增
+
+- **[MediaWarp]**: 集成 [zian-yan/MediaWarp](https://github.com/zian-yan/MediaWarp) v1.2.3。官方镜像把仓库内 `mediawarp/` 的 Go 源码与 AutoFilm 编译进**同一个容器**，AutoFilm 作为主进程按面板配置生成 `/config/mediawarp.yaml` 并托管代理子进程；侧边栏新增「MediaWarp」入口，提供分组可视化配置面板（服务托管、监听与上游、日志与缓存、客户端过滤、HTTPStrm 302 共 5 组）与服务状态卡片。
+- **[MediaWarp]**: 配置保存走完整事务——静态校验 → 原子写生成文件（含 `.bak`）→ SIGTERM 优雅停旧 → 拉起新进程 → 端口健康检查 → 才写 `config.yaml`；任一步失败自动还原文件并用旧配置重新拉起，状态卡片显示失败原因。重启在热重载内核中串行执行，且仅在 MediaWarp 配置或生成文件实际变化时才触发，改其它任务不会打断播放。
+- **[Admin]**: MediaWarp 页新增「立即重启」「预览生成的配置」「从文件导入」动作，以及每 3 秒刷新的运行状态（阶段、PID、端口、健康、累计重启、生成文件路径、最近错误）。
+
+### 🔧 变更
+
+- **[Repo]**: 仓库重组为聚合结构：`autofilm/` 放 AutoFilm（Rust）源码、`mediawarp/` 放 MediaWarp（Go）v1.2.3 上游源码（已移除嵌套 `.git`），`.git`、`.github/`、`.agents/`、`.workbuddy/` 保留在仓库根。所有 `cargo` 命令改在 `autofilm/` 下执行，CI 工作流通过 `working-directory` / `autofilm/` 前缀适配；新增根级 `.dockerignore`（排除构建产物与密钥）与聚合版 `.gitignore`。
+- **[Docker]**: `autofilm/docker/Dockerfile` 与 `Dockerfile.ci` 改为 `COPY mediawarp/` 本地源码编译，去掉 `git clone` 与 `MEDIAWARP_REF`；构建上下文改为**仓库根目录**（`docker build -f autofilm/docker/Dockerfile .`）。Rust 侧 COPY 路径统一加 `autofilm/` 前缀，并补上 `build.rs` 与 `.git` 供 vergen 生成版本信息。Go 依赖仍由模块代理下载，可用 `go mod vendor` 转为完全离线。
+- **[Docker]**: `docker/compose.yaml` 默认映射 `9000` 端口；`config/mediawarp.example.yaml` 提供生成文件示例，生成文件本身已加入 `.gitignore`（含 API Key）。
+- **[Admin]**: 配置应用超时由 20 秒放宽到 45 秒，为一次完整的代理重启（停止 5s + 健康检查 10s）留出余量。
+- **[Docs]**: README 补充仓库结构、本地构建命令，以及按 MediaWarp 上游 LICENSE 第 3 条要求写明的来源与许可声明。
+
 ## [2.2.1] - 2026-11-10
 
 ### ✨ 新增

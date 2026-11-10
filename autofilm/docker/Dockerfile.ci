@@ -1,3 +1,16 @@
+# 发布镜像同样内置 MediaWarp：Rust 二进制由 CI 预编译，Go 二进制在这里交叉编译。
+# 构建上下文是仓库根目录：targets/ 放预编译的 Rust 二进制，mediawarp/ 放 Go 源码。
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS mediawarp-builder
+
+ARG TARGETARCH=amd64
+ENV GOTOOLCHAIN=auto \
+    CGO_ENABLED=0
+
+WORKDIR /src
+COPY mediawarp/ .
+RUN GOOS=linux GOARCH="${TARGETARCH}" go build -trimpath -ldflags "-s -w" \
+        -o /tmp/mediawarp .
+
 FROM alpine
 
 ARG TARGETPLATFORM
@@ -7,6 +20,7 @@ ENV TZ=Asia/Shanghai
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --chmod=755 targets/${TARGETPLATFORM}/autofilm /autofilm
+COPY --from=mediawarp-builder --chmod=755 /tmp/mediawarp /usr/local/bin/mediawarp
 
 VOLUME ["/config", "/logs", "/media", "/fonts"]
 WORKDIR /
