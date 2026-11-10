@@ -130,6 +130,19 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new(base_dir: PathBuf) -> Self {
+        // 容器里 `config.yaml` 常以相对路径（config/config.yaml）传入，基准目录也会是
+        // 相对的 `config`。此时写盘按主进程 cwd(`/`) 解析成 /config/mediawarp.yaml，
+        // 而子进程 cwd 是 /config，同一个相对路径会被解析成
+        // /config/config/mediawarp.yaml，MediaWarp 随即报 "no such file or directory"。
+        // 统一转成绝对路径，让写盘、`--config` 参数与状态展示指向同一处，
+        // 且不受子进程 cwd 影响。
+        let base_dir = if is_fixed_path(&base_dir) {
+            base_dir
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("/"))
+                .join(&base_dir)
+        };
         Self {
             base_dir,
             inner: AsyncMutex::new(Inner::default()),
@@ -154,13 +167,24 @@ impl Supervisor {
     }
 
     /// 相对路径按 `config.yaml` 所在目录解析，绝对路径原样使用。
+    /// `base_dir` 已在 `new()` 里绝对化，因此返回值一定是绝对路径。
     pub fn resolve_path(&self, raw: &str) -> PathBuf {
         let path = PathBuf::from(raw.trim());
-        if path.is_absolute() {
+        if is_fixed_path(&path) {
             path
         } else {
             self.base_dir.join(path)
         }
+    }
+
+    /// 子进程工作目录：配置目录的父目录（容器里 `/config` → `/`），
+    /// 让 MediaWarp 的 `logs/` 等相对路径落到容器根下的挂载点。
+    fn process_cwd(&self) -> PathBuf {
+        self.base_dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(&self.base_dir)
+            .to_path_buf()
     }
 
     fn set_status(&self, update: impl FnOnce(&mut Status)) {
@@ -339,12 +363,7 @@ impl Supervisor {
         }
 
         // 步骤 4：拉起新进程 + 端口健康检查。
-        let cwd = self
-            .base_dir
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(&self.base_dir)
-            .to_path_buf();
+        let cwd = self.process_cwd();
         let mut child = match spawn_process(config, &path, &cwd) {
             Ok(child) => child,
             Err(err) => {
@@ -465,10 +484,17 @@ impl Supervisor {
 }
 
 fn spawn_process(config: &MediaWarpConfig, path: &Path, cwd: &Path) -> std::io::Result<Child> {
+    // 子进程 cwd 与主进程不同，`--config` 必须用绝对路径；`resolve_path()` 已保证这一点，
+    // 这里再兜底一次，避免任何相对路径在子进程里被二次拼接。
+    let config_path = if is_fixed_path(path) {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
     let mut command = Command::new(&config.binary);
     command
         .arg("--config")
-        .arg(path)
+        .arg(config_path)
         .args(&config.extra_args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -547,6 +573,12 @@ fn now_rfc3339() -> String {
     Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// 路径是否已不依赖当前工作目录：Unix 绝对路径，或 Windows 上以根分隔符
+/// 开头（如 `/config`，不带盘符但也不会随 cwd 变化）的路径。
+fn is_fixed_path(path: &Path) -> bool {
+    path.is_absolute() || path.has_root()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +590,33 @@ mod tests {
             supervisor.resolve_path("mediawarp.yaml"),
             PathBuf::from("/config/mediawarp.yaml")
         );
+        assert_eq!(
+            supervisor.resolve_path("/etc/mediawarp.yaml"),
+            PathBuf::from("/etc/mediawarp.yaml")
+        );
+    }
+
+    #[test]
+    fn relative_base_dir_is_absolute_for_both_write_and_spawn() {
+        // 复现容器内的启动方式：--config config/config.yaml（相对路径）。
+        let supervisor = Supervisor::new(PathBuf::from("config"));
+        let path = supervisor.resolve_path("mediawarp.yaml");
+        assert!(path.is_absolute(), "生成路径必须绝对化: {}", path.display());
+        assert!(path.ends_with("config/mediawarp.yaml"));
+
+        let cwd = supervisor.process_cwd();
+        assert!(
+            cwd.is_absolute(),
+            "子进程 cwd 必须绝对化: {}",
+            cwd.display()
+        );
+        assert_eq!(cwd, supervisor.base_dir.parent().unwrap());
+        assert_ne!(
+            cwd, supervisor.base_dir,
+            "cwd 不能等于配置目录，否则相对路径会被二次拼接"
+        );
+
+        // 绝对路径配置仍然原样使用。
         assert_eq!(
             supervisor.resolve_path("/etc/mediawarp.yaml"),
             PathBuf::from("/etc/mediawarp.yaml")
