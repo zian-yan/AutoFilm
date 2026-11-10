@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-10
+
 ### ✨ 新增
 
 - **[MediaWarp]**: 集成 [zian-yan/MediaWarp](https://github.com/zian-yan/MediaWarp) v1.2.3。官方镜像把仓库内 `mediawarp/` 的 Go 源码与 AutoFilm 编译进**同一个容器**，AutoFilm 作为主进程按面板配置生成 `/config/mediawarp.yaml` 并托管代理子进程；侧边栏新增「MediaWarp」入口，提供分组可视化配置面板（服务托管、监听与上游、日志与缓存、客户端过滤、HTTPStrm 302 共 5 组）与服务状态卡片。
@@ -169,6 +171,7 @@
 
 <!-- 底部对比链接 -->
 
+[3.0.0]: https://github.com/zian-yan/AutoFilm/releases/tag/v3.0.0
 [2.2.1]: https://github.com/zian-yan/AutoFilm/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/zian-yan/AutoFilm/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/zian-yan/AutoFilm/compare/v2.0.0...v2.1.0
