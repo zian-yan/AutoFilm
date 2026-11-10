@@ -1,15 +1,31 @@
-config/config.yaml
-config/config.old.yaml
-config/web.yaml
+# 仓库聚合根
+#   autofilm/   —— AutoFilm（Rust）源码，构建工作目录为 autofilm/
+#   mediawarp/  —— MediaWarp（Go）上游源码，v1.2.3
+#   .github/    —— 仓库级 CI：GitHub Actions 只识别仓库根的 .github/workflows
 
 .workbuddy/
 
-logs/*
-strm/*
-media/*
-__pycache__/*
-.mypy_cache/*
-target/*
+# ---------- AutoFilm：本地配置与运行产物 ----------
+autofilm/config/config.yaml
+autofilm/config/config.old.yaml
+autofilm/config/web.yaml
+# 由面板自动生成，内含媒体服务器 API Key；示例见 autofilm/config/mediawarp.example.yaml
+autofilm/config/mediawarp.yaml
+autofilm/logs/*
+autofilm/strm/*
+autofilm/media/*
+autofilm/target/*
+autofilm/alist-client-rs/target/*
+autofilm/__pycache__/*
+autofilm/.mypy_cache/*
+
+# ---------- MediaWarp：本地配置与构建产物 ----------
+mediawarp/config/config.yaml
+mediawarp/logs/*
+mediawarp/custom/*
+mediawarp/dist/
+mediawarp/MediaWarp
+mediawarp/MediaWarp.exe
 
 .DS_Store
 *bak

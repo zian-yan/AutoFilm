@@ -3,11 +3,15 @@ name: Continuous Integration
 on:
   push:
     paths:
-      - "**/*.rs"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "rustfmt.toml"
+      - "autofilm/**/*.rs"
+      - "autofilm/Cargo.toml"
+      - "autofilm/Cargo.lock"
+      - "autofilm/rust-toolchain.toml"
+      - "autofilm/rustfmt.toml"
+      - "mediawarp/**/*.go"
+      - "mediawarp/go.mod"
+      - "mediawarp/go.sum"
+      - ".github/workflows/**"
   pull_request:
   workflow_dispatch:
 
@@ -36,7 +40,7 @@ jobs:
         id: rust-toolchain
         shell: bash
         run: |
-          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' autofilm/rust-toolchain.toml)
           test -n "$channel"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
@@ -48,13 +52,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            . -> target
-            alist-client-rs -> alist-client-rs/target
+            autofilm -> autofilm/target
+            autofilm/alist-client-rs -> autofilm/alist-client-rs/target
 
       - name: Test AutoFilm
+        working-directory: autofilm
         run: cargo test --locked
 
       - name: Test Alist Client
+        working-directory: autofilm
         run: cargo test --locked --manifest-path alist-client-rs/Cargo.toml
 
   fmt-check:
@@ -71,4 +77,5 @@ jobs:
           components: rustfmt
 
       - name: Rust Format Check
+        working-directory: autofilm
         run: cargo +nightly fmt --check

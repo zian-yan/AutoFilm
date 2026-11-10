@@ -84,9 +84,9 @@ jobs:
             bin_name="$(basename "${bin_path}")"
 
             cp "${bin_path}" "${package_dir}/${bin_name}"
-            cp LICENSE "${package_dir}/LICENSE"
-            cp config/config.example.yaml "${package_dir}/config.example.yaml"
-            cp README.md "${package_dir}/README.md"
+            cp autofilm/LICENSE "${package_dir}/LICENSE"
+            cp autofilm/config/config.example.yaml "${package_dir}/config.example.yaml"
+            cp autofilm/README.md "${package_dir}/README.md"
 
             pushd "${package_dir}" > /dev/null
 
@@ -123,7 +123,7 @@ jobs:
 
           # 1. 优先从 CHANGELOG.md 中提取当前版本的说明
           # 提取当前版本从 ## [版本] 开始，到下一个 ## [ 或 --- 分割线前的内容，避免将底部的比对链接引入 release body
-          if [ -f CHANGELOG.md ]; then
+          if [ -f autofilm/CHANGELOG.md ]; then
             RAW_CHANGELOG=$(awk -v ver="${TAG_NAME#v}" '
               BEGIN { in_section = 0 }
               $0 ~ "^## \\[" {
@@ -137,7 +137,7 @@ jobs:
                 if ($0 ~ "^---+" || $0 ~ "^<!--" || $0 ~ "^\\[[^\\]]+\\]:") exit
                 print
               }
-            ' CHANGELOG.md | sed '/./,$!d' || true)
+            ' autofilm/CHANGELOG.md | sed '/./,$!d' || true)
 
             if [ -n "$RAW_CHANGELOG" ]; then
               CHANGELOG="$RAW_CHANGELOG"
@@ -233,11 +233,11 @@ jobs:
           BODY="${BODY}"$'\n\n'"### 🐳 Docker 镜像"$'\n\n'
           BODY="${BODY}本次发布 \`${IMAGE}:latest\`（始终指向最新正式版）。需要可复现部署时改用固定版本标签：\`${IMAGE}:${VERSION}\`、\`${IMAGE}:${MINOR}\`、\`${IMAGE}:${MAJOR}\`。"
 
-          COMPOSE_CONTENT=$(cat docker/compose.yaml)
+          COMPOSE_CONTENT=$(cat autofilm/docker/compose.yaml)
           BODY="${BODY}"$'\n\n'"### 📦 Docker Compose 配置示例"$'\n\n'"\`\`\`yaml"$'\n'"${COMPOSE_CONTENT}"$'\n'"\`\`\`"
 
           # 添加 config.yaml 配置示例
-          CONFIG_CONTENT=$(cat config/config.example.yaml)
+          CONFIG_CONTENT=$(cat autofilm/config/config.example.yaml)
           BODY="${BODY}"$'\n\n### ⚙️ config.yaml 配置示例\n\n```yaml\n'"${CONFIG_CONTENT}"$'\n```'
 
           # 使用 heredoc 写入多行输出

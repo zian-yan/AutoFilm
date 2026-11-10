@@ -108,7 +108,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: docker/Dockerfile.ci
+          file: autofilm/docker/Dockerfile.ci
           platforms: |
             linux/amd64
             linux/arm64

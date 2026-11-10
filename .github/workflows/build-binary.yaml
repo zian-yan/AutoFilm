@@ -46,7 +46,7 @@ jobs:
         id: rust-toolchain
         shell: bash
         run: |
-          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' autofilm/rust-toolchain.toml)
           test -n "$channel"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
@@ -54,6 +54,7 @@ jobs:
         uses: houseabsolute/actions-rust-cross@v1
         with:
           command: build
+          working-directory: autofilm
           target: ${{ matrix.platform.target }}
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           args: "--locked --release"
@@ -63,4 +64,4 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.platform.target }}
-          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+          path: autofilm/target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
