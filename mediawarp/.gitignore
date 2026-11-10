@@ -1,0 +1,18 @@
+
+config/*
+!config/.gitkeep
+# 本目录作为源码 vendored 进 AutoFilm 仓库，示例配置必须一并纳入版本控制
+!config/config.yaml.example
+logs/*
+!logs/.gitkeep
+/custom/*
+!/custom/.gitkeep
+
+# 执行文件（锚定顶层，避免误伤子目录）
+dist/
+/MediaWarp*
+
+# 其他
+test/*
+.DS_Store
+.workbuddy/

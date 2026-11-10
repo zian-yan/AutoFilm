@@ -1,0 +1,107 @@
+name: Build Binary
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version string injected into the binary"
+        required: false
+        type: string
+        default: "dev"
+      commit_hash:
+        description: "Commit hash injected into the binary"
+        required: false
+        type: string
+        default: ""
+      build_date:
+        description: "RFC3339 build date injected into the binary"
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string injected into the binary"
+        required: false
+        type: string
+        default: "dev"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MediaWarp for ${{ matrix.platform.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - target: linux_amd64
+            goos: linux
+            goarch: amd64
+            bin: MediaWarp
+          - target: linux_arm64
+            goos: linux
+            goarch: arm64
+            bin: MediaWarp
+          - target: darwin_amd64
+            goos: darwin
+            goarch: amd64
+            bin: MediaWarp
+          - target: darwin_arm64
+            goos: darwin
+            goarch: arm64
+            bin: MediaWarp
+          - target: windows_amd64
+            goos: windows
+            goarch: amd64
+            bin: MediaWarp.exe
+          - target: windows_arm64
+            goos: windows
+            goarch: arm64
+            bin: MediaWarp.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.platform.goos }}
+          GOARCH: ${{ matrix.platform.goarch }}
+          APP_VERSION: ${{ inputs.version }}
+          COMMIT_HASH: ${{ inputs.commit_hash || github.sha }}
+          BUILD_DATE: ${{ inputs.build_date }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BUILD_DATE}" ]]; then
+            BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+
+          output_dir="dist/build/${{ matrix.platform.target }}"
+          mkdir -p "${output_dir}"
+
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/AkimioJR/MediaWarp/internal/config.appVersion=${APP_VERSION} -X github.com/AkimioJR/MediaWarp/internal/config.commitHash=${COMMIT_HASH} -X github.com/AkimioJR/MediaWarp/internal/config.buildDate=${BUILD_DATE}" \
+            -o "${output_dir}/${{ matrix.platform.bin }}" \
+            .
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MediaWarp_${{ matrix.platform.target }}
+          path: dist/build/${{ matrix.platform.target }}/${{ matrix.platform.bin }}
+          if-no-files-found: error

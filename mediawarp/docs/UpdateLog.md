@@ -1,0 +1,245 @@
+# 版本更新日志
+- 2024.8.21: v0.0.1
+  - 实现 MediaWarp 基本功能
+- 2024.8.25: v0.0.2
+  - 增加返回自定义静态资源功能
+  - 优化播放直链视频 302 重定向逻辑
+  - 增加自定义客户端过滤功能
+- 2024.9.14: v0.0.3
+  - 实现 AlistStrm 重定向
+  - 适配 EmbyServer 4.9 视频播放逻辑
+  - 嵌入实用功能（外部播放器、弹幕、美化等）
+  - 支持WebSocket
+- 2024.9.29: v0.0.4
+  - 优化 mediaSourceID 处理逻辑
+  - 使用 httputil.ReverseProxy 处理 HTTP 和 WebSocket 请求
+  - 设置浏览器referer策略，跳转时减少服务器站点泄露
+  - 使用正则表达式进行路由匹配
+  - 定义缓存接口、实现内存缓存逻辑
+  - 修改项目结构
+  - 用户自定义资源设为 Custom、从 config 中读取需要额外添加的 HEAD
+  - 日志允许设置是否输出到终端或文件
+  - 日志根据日期分割
+- 2024.11.1: v0.0.5
+  - 扩大 VideosHandler 匹配范围（修复 FileBall 下 Strm 文件播放问题，不完美）
+  - 中间件缓存可选是否开启（避免内存缓存缓存大量图片、css、js 等资源）
+  - 修改 internal/config、internal/logger、internal/cache 这几个包，使其使用方式更加 “golang”
+  - 支持加载多种格式的配置文件（JSON、TOML、YAML、YML、Java properties、Java props）
+- 2024.12.22: v0.0.6
+  - 提供 API 接口查看版本具体信息
+  - 小幅度修改项目子包结构
+  - 使用 goreleaser 进行构建
+  - 减小 EmbyServer.VideosHandler 匹配范围
+  - 需要修改响应体时复用之前实例化的 httputil.ReverseProxy
+  - EmbyServerHandler.PlaybackInfoHandler 拦截修改响应修改 AlistStrm 正确播放地址
+- 2025.2.20: v0.0.7
+  - 提供字幕接口相关正则，新增 SRT 字幕转 ASS 字幕功能
+  - 修复当 MediaStreams 为空数组的情况移除该字段导致导致部分客户端报错问题
+  - 优化 VideosHandler 函数中优先判断是否为 HEAD 请求
+  - 优化 ModifyPlaybackInfo 函数，减少无意义请求数，降低响应延迟
+  - 新增转码设置选项以支持 HTTPStrm 和 AlistStrm  是否返回 PlaybackInfo 通告客户端禁止转码
+  - f新增 RawURL 配置选项以控制 AlistStrm 的重定向链接
+- 2025.3.22: v0.0.8
+  - 优化 AlistStrm 重定向连接
+  - 重构 EmbyRegexp 结构，优化正则表达式管理 
+  - 优化 EmbyServerHandler.ModifySubtitles 和 EmbyServerHandler.ModifyBaseHtmlPlayer 性能
+  - 优化 SRT2ASS 性能
+  - 修改正则路由处理，使用不带查询参数的 URL 路径（Path）进行路由匹配
+  - 添加版本信息标志，支持显示当前版本信息
+- 2025.3.26: v0.0.9
+  -  调整静态资源、自定义目录
+  -  使用 git 子模块的方式引入 js、css 等文件，移除 emby css 美化功能
+  -  移除内存缓存相关设计，以避免内存泄漏
+  -  修复 ModifyPlaybackInfo 和 ModifySubtitles 函数中的响应体关闭顺序，确保正确读取 HTTP 响应
+  -  优化 EmbyServerHandler.responseModifyCreater 闭包逻辑
+  -  使用 switch 语句重构客户端过滤器逻辑，移除未知模式处理
+  -  使用 gin.Recovery() 捕获 panic，避免 MediaWarp 出现意外错误后软件崩溃
+  -  优化程序启动逻辑，改进错误处理
+  -  解析构建时间格式，改进构建日期处理逻辑
+  -  更新 go-lang 版本及第三方依赖
+- 2025.3.27: v0.0.10
+  -  主函数添加信号处理和错误处理机制，优化服务退出流程
+  -  修复配置初始化失败时错误调用日志输出，改为使用标准输出
+  -  将 responseModifyCreater、recgonizeStrmFileType、updateBody 函数移至 utils.go 并独立与 EmbyServerHandler，便于后续复用
+  -  修复日志中间件颜色控制输出错误问题
+  -  将反向代理逻辑从 emby.EmbyServer 移至 handler.EmbyServerHandler
+  -  重构媒体服务器处理器初始化逻辑，改为返回错误以便更好地处理初始化失败情况
+  -  添加 GZIP、Brotli 解压支持并重构读取响应体的逻辑
+  -  在正则路由处理器中添加调试日志以记录匹配成功的 URL
+  -  在恢复中间件中添加详细的错误日志记录以处理 panic 错误
+  -  支持通过命令行参数指定配置文件路径
+- 2025.3.29: v0.1.0
+  - 添加 Jellyfin 支持
+  - 添加 crx 美化功能（支持 Emby 和 Jellyfin）
+  - 调整某些常量命名，更符合 go-lang 命名
+- 2025.6.2: v0.1.1
+  - 更新上游依赖
+  - 提高对 EmbyServer beta 版本的兼容性
+  - HTTPStrm 添加获取最终 URL 获取功能，减少客户端重定向次数
+  - 提高对 Afusekt 客户端的兼容性 [#37](https://github.com/AkimioJR/MediaWarp/issues/37)
+  - 优化 responseModifyCreater 函数，可以捕捉内层函数的 panic 信息
+- 2025.7.10: v0.1.2
+  - 使用全局优化的 HTTP 客户端替换局部客户端实例，统一 HTTP 出口
+  - 添加自定义 robots.txt 支持
+  - 修正 Jellyfin 播放信息正则表达式，确保匹配正确的路径 [#47](https://github.com/AkimioJR/MediaWarp/issues/47)
+- 2025.10.2: v0.1.3
+  - 将 MediaServerType 从字符串类型更改为 uint8
+  - 修复 robots.txt 路由错误问题
+  - 优化初始化过程，统一日志输出，移除冗余代码
+  - 使用当前目录作为项目根目录
+- 2025.10.15: v0.1.4
+  - 添加 HTTPStrm 最终重定向缓存
+  - 添加 Alist API 缓存
+  - AlistStrm 支持基础目录未非根目录用户
+  - 移除 viper，仅支持识别 yaml 配置文件
+  - 添加结构体标签（**可能导致部分配置不通用**）
+  - 修复 AlistStrm 重定向逻辑，确保仅在有效的重定向 URL 时进行重定向
+  - 优化 QueryCaseInsensitive 中间件，简化查询参数处理逻辑
+  - 优化 LoggerFileHook 的文件处理逻辑，提高性能
+  - 修复 GZIP 压缩时响应体为空的问题 ([#64](https://github.com/AkimioJR/MediaWarp/issues/64))
+- 2025.10.27: v0.1.5
+  - 移除编码压缩/解压缩
+  - 优化中间件处理逻辑
+  - 添加图片/字幕缓存中间件
+  - 修复 Alist API 缓存问题
+- 2025.12.3: v0.1.6
+  - 更新 Jellyfin 播放路径匹配表达式支持更多服务端版本
+  - 修复 Alist API 调用问题 
+  - 重构 Alist 相关命名
+  - 提高 Alist 获取文件 URL 的性能
+- 2026.1.7: v0.1.7
+  - 修复 Emby 章节信息和缩略图显示问题 ([#79](https://github.com/AkimioJR/MediaWarp/issues/79))
+  - 修复某些播放器请求播放时多次请求非播放动作导致重定向链接获取，提高兼容性 ([#80](https://github.com/AkimioJR/MediaWarp/issues/80))
+- 2026.1.30: v0.1.8
+  - 修复新版 alist API 响应数据类型变化导致的解析错误
+  - 移除 PlaybackInfo 控制流相关代码
+  - 禁用流式播放提高兼容性
+  - 重构 PlaybackInfo 响应修改控制流程，提高兼容性
+- 2026.2.6: v0.2.0
+  - 重构 ModifyPlaybackInfo 相关方法
+  - 添加飞牛影视支持
+- 2026.2.7: v0.2.1
+  - 添加 AlistStrm 重定向 URL 耗时日志
+  - 修复 ModifyStream 响应体处理和状态码检查逻辑
+  - 更新字幕缓存正则表达式以支持下载接口
+  - 移除 FNTV 正则的大小写不敏感标志，规范变量命名
+  - 调整 HTTPStrm 和 AlistStrm 设置，优化 PlaybackInfo 处理
+  - 添加兼容模式选项以优化 HTTPStrm 请求
+- 2026.2.8: v0.2.2
+  - 飞牛影视 AlistStrm 模式支持播放网盘转码视频
+  - 修复 Emby PlaybackInfo 中 DirectStreamURL 生成错误问题
+  - 提高 Emby 的兼容性
+- 2026.3.19: v0.2.3
+  - 修复 AlistStrm 非 raw_url 模式下 url 拼接错误问题
+  - 重构 Alist 模块相关代码
+  - 更新 Go 版本和依赖版本以及使用更新的语法表达
+  - 禁止 HTTPStrm 模式下 proxy 时移除修改 SupportsDirectStream 为 false 的行为，提高兼容性
+- 2026.6.8: v0.2.4
+  - 修复基础路径不为空时 Emby/Jellyfin/Alist 客户端初始化和请求 URL 拼接异常问题
+  - 重构 Emby、Jellyfin、Alist 客户端请求地址构建逻辑，使用 url.URL/JoinPath 生成请求地址并复用全局 HTTP Client
+  - 修复示例配置中字幕转换配置键名，将 art2ass 更正为 srt2ass
+  - 优化图片缓存中间件判断逻辑和页面 HEAD 注入逻辑，减少不必要的处理和内存分配
+  - 使用嵌入文件方式处理启动 Logo，避免 Logo 字符串首尾空白
+  - 升级 Go 版本至 1.26 并更新依赖项和静态资源子模块
+  - 重构 CI、GoReleaser 和 Docker 构建流程，支持构建参数注入版本信息、新增 linux/riscv64 镜像并同步 README 到 Docker Hub
+- 2026.9.29: v0.2.5
+  - 新增飞牛影视 (FNTV) 弹幕插件支持，引入前端弹幕脚本注入与播放信息钩子
+  - 修复 VideosHandler 中 Emby 和 Jellyfin 响应缺失 Path 或 MediaSources 时的 nil 指针解引用问题
+  - 修复 ImageCache 缓存未命中时重复调用 ctx.Next() 的问题
+  - 重构页面头部脚本注入逻辑，统一管理 Emby、Jellyfin、FNTV 的嵌入处理
+  - 将反向代理已弃用的 ReverseProxy.Director 迁移至 Rewrite，并优化代理创建逻辑
+  - 优化日志格式化输出，减少字符串与内存分配
+  - 升级 Go 工具链版本至 1.26.6 并更新依赖项版本
+  - 重构 CI/CD 流程，移除 GoReleaser 改用 GitHub Actions 处理跨平台二进制与 Docker 构建，并增加代码格式、vet 与漏洞检查工作流
+- 2026.11.2: v0.3.0（精简版）
+  - 仅保留三项功能：HTTPStrm 302 重定向、客户端屏蔽、缓存与日志
+  - 移除 AlistStrm（含 Alist API 客户端、转码资源列表、alist_api_ttl 配置）
+  - 移除 Web 前端定制（web 配置、静态资源路由、内置脚本、custom 目录、static 子模块）
+  - 移除字幕处理（subtitle 配置、SRT 转 ASS、字体子集化）
+  - 移除飞牛影视（FNTV）适配与 /MediaWarp/version 接口
+  - 修正 final_url 获取失败时返回空 Location 的问题，改为回退原始 URL
+  - 修正 VideosHandler 在未命中重定向条件时无响应的问题，改为回退反向代理
+- 2026.11.2: v0.4.0
+  - 新增配置管理页面 /MediaWarp/config，支持配置加载与提交，保存成功/失败均有明确提示
+  - 监听端口与代理端口拆分为两个独立配置项，可分别修改、分别保存
+  - 监听端口支持热切换（先绑定新端口再关闭旧监听，失败不影响现有监听）
+  - 代理端口支持热加载（重建媒体服务器处理器，失败自动回滚）
+  - 配置写回使用 yaml.Node 定点修改并原子落盘，保留注释与其他配置项
+  - 新增 web.enable 开关（缺省启用）与写操作的请求头校验，避免跨站提交
+- 2026.11.2: v0.5.0
+  - 配置页面升级为全量编辑：展示全部配置项，按类型提供开关、下拉、数字、时长、列表等控件
+  - 新增 PUT /MediaWarp/api/config 整份保存，支持字段级校验错误回显；保留按端口保存的兼容接口
+  - 保存后按字段触发热重载：监听端口切换、上游处理器重建、日志重载、缓存 TTL 生效
+  - 缓存中间件改为按请求读取配置，TTL 变更自动重建缓存池，路由无需重建
+  - 客户端过滤中间件改为按请求判断开关，保存后即时生效
+  - 配置写回支持列表项，且只写发生变化的字段，保留注释与格式；API 密钥不回传、留空不修改
+- 2026.11.2: v0.5.1
+  - Docker 构建流程支持同时发布到 GitHub Packages（ghcr.io）与 Docker Hub
+  - 多架构构建改为由 `platforms` 输入控制，仅保留 amd64 / arm64（移除 arm/v7 与 riscv64 镜像及对应二进制产物）
+  - Docker Hub 凭据改为可选，未配置时只发布到 ghcr.io；镜像名统一转小写
+  - 镜像补齐 ca-certificates 与 tzdata，修复解析 HTTPS 直链时的根证书校验失败
+  - 新增 .dockerignore，缩小构建上下文并避免把本地真实配置打进镜像
+  - CI 新增镜像构建校验作业（只构建不推送）
+- 2026.11.2: v0.6.0
+  - 移除配置管理页面与全部 Web 管理接口：删除 `internal/web`（页面、`/MediaWarp/config`、`/MediaWarp/api/config`）、`web` 配置段
+  - 移除配置写回与热重载：删除 `config/*` 定点改写（file.go/write.go）、字段元数据与校验（schema.go）、`internal/server` 监听管理器
+  - 配置改为完全手动编辑 `config/config.yaml`，改动后重启进程生效
+  - 新增启动期校验：端口范围、上游类型与地址、白名单模式空名单会直接报错退出
+  - 启动流程简化为标准 `net.Listen` + `http.Server` + 优雅退出，端口占用时立即报错
+  - 缓存池、客户端过滤、日志输出均在启动时一次性建好，不再按请求读配置
+  - 旧配置文件中的 `web:` 段会被静默忽略，不影响启动
+- 2026.11.2: v1.0.0
+  - 版本号提升至 v1.0.0：完成精简重构与安全加固后的首个稳定版本
+  - 安全：缓存键纳入凭据指纹，修复未认证请求可命中他人缓存响应的越权问题
+  - 安全：HTTPStrm 预解析增加 SSRF 防护（协议白名单 + 拦截环回/链路本地地址），302 目标仅允许 http/https
+  - 安全：访问日志与服务日志对 api_key / ApiKey / X-Emby-Token 等敏感参数脱敏
+  - 安全：日志文件权限收紧为 0640，配置与日志目录收紧为 0750；镜像固定 alpine 版本
+  - 稳定：HTTP Server 增加 ReadHeaderTimeout / IdleTimeout，缓解 Slowloris 慢速请求攻击
+  - 稳定：缓存单条上限 8MiB，图片/字幕缓存池上限 256MB，HTTPStrm 缓存池上限 64MB，避免内存无上限增长
+  - 其他：Recovery 不再向客户端回显 panic 详情；重定向次数上限修正为 10 次；响应体关闭前排空以复用连接
+- 2026.11.3: v1.0.1
+  - 修复内存持续增长：缓存改用自研有界 LRU+TTL（`internal/cache`），移除 bigcache 依赖
+  - 启动内存由 ~550MB 降至 ~6MB，图片/字幕各限 32MiB、HTTPStrm 8MiB、单条 4MiB，可回收
+  - 缓存体不再走 JSON/base64 编码，并修复缓存中间件替换 ResponseWriter 后未还原的问题
+  - 修复日志文件句柄每日重开、并发写无锁的问题
+- 2026.11.4: v1.1.0
+  - 缓存池预算上调：图片缓存池 32MiB → 64MiB，HTTPStrm 重定向缓存池 8MiB → 16MiB，字幕池维持 32MiB
+  - 缓存预算改为 `middleware.NewCache` 入参（`ImagePoolBytes` / `SubtitlePoolBytes`），图片与字幕不再共用同一上限常量
+  - 响应新增 `X-Cache: HIT` / `X-Cache: MISS` 头，客户端与 curl 可直接确认本次是否命中缓存
+  - 新增缓存命中率采样日志：每 500 次查询输出命中率、条目数与占用字节，运行期可观测
+  - 新增 `cache.Cache.Stats()` 一致性快照，暴露命中、未命中、条目数与占用字节
+  - 修复缓存写入时把 `X-Cache: MISS` 一并克隆进缓存、导致命中回放误报的问题
+  - 清理全部 Go 源码注释
+- 2026.11.4: v1.1.1
+  - 修复过期缓存条目不释放：TTL 此前仅在读取时惰性判断，冷数据过期后无人访问会一直驻留内存；现由后台协程按分钟主动清理
+  - `internal/cache` 新增 `Config.SweepInterval`（大于 0 才启动清理协程）与 `ReleaseOS`，单次清理释放量达到阈值时调用 `debug.FreeOSMemory`，把页真正归还操作系统
+  - 新增 `Cache.PurgeExpired()` 与 `Cache.Close()`，图片 / 字幕 / HTTPStrm 三个缓存池均接入主动清理
+  - 镜像增加 `GOMEMLIMIT=192MiB` 软上限（须高于缓存池总量 112MiB，否则会陷入高频 GC），避免堆内存无界增长
+- 2026.11.5: v1.2.0
+  - 客户端过滤器：黑名单模式下空 `User-Agent` 不再被拦截（此前空 UA 与名单无关一律 403），白名单模式仍保持拒绝
+  - 过滤器拦截日志补充请求方法、路径与来源 IP，UA 以引号包裹输出，便于定位被拦请求
+  - 新增 `http_strm.hide_embedded_subtitles`：对命中 `prefix_list` 的 Strm 条目隐藏内嵌字幕流，避免媒体服务器提取字幕时把远程 HTTP 源整片下载（外挂字幕不受影响）
+  - 新增 `http_strm.hide_embedded_subtitles_clients`：按 User-Agent 包含关系（忽略大小写）限定生效客户端，留空表示全部客户端
+  - 移除 `docker/Dockerfile`、`docker/Dockerfile.ci` 与 `scripts/*.sh` 中的注释
+- 2026.11.5: v1.2.1
+  - 启动日志输出隐藏内嵌字幕的生效范围，例如 `隐藏内嵌字幕流已启用：仅对客户端 Polaris 生效（PlaybackInfo 隐藏 + 字幕请求拦截）`；`http_strm.enable` 为 false 或名单含空白项时给出警告
+  - 新增路由级拦截：命中 `prefix_list` 的 Strm 条目，客户端直接请求内嵌字幕流（`/Videos/{id}/{mediaSourceId}/Subtitles/{index}/...`）时返回 404，避免客户端绕过 PlaybackInfo 触发 ffmpeg 提取整片；外挂字幕、非 Strm 条目与查询失败均照常放行
+  - 字幕请求拦截复用 `hide_embedded_subtitles_clients` 的 User-Agent 名单，未命中名单的客户端不产生额外查询
+  - `config.yaml.example` 补充客户端 UA 填写说明：网页播放填 `Mozilla` 即覆盖 Chrome / Safari / Edge，并提示不要只写 `Safari`（Chrome 的 UA 也含 Safari/537.36）
+  - 补充单元测试：字幕路径解析、UA 匹配、内嵌拦截 / 外挂放行 / 名单外放行三条路由用例
+- 2026.11.6: v1.2.2
+  - `http_strm.final_url` 重定向解析默认放行环回地址（`127.0.0.0/8`、`::1`），不再拦截媒体服务器与本机服务（本机 Alist / OpenList 等）之间的直连场景
+  - 新增 `http_strm.allow_loopback`（默认 `true`）：设为 `false` 时恢复对环回地址的拦截，用于收紧密集部署的 SSRF 面
+  - 链路本地地址（`169.254.0.0/16`）、组播与未指定地址仍始终拒绝，不受该开关影响；`allow_loopback` 关闭时启动日志给出提示
+  - 补充单元测试：环回默认放行 / 显式关闭 / 局域网地址不受影响 / 链路本地与未指定地址始终拒绝共 12 例
+  - 修复发布说明中的 @ 提及：按 GitHub 账号映射提交邮箱，避免提及到无关用户
+- 2026.11.9: v1.2.3
+  - **安全修正（行为变更）**：`http_strm.allow_loopback` 默认值由 v1.2.2 的 `true` 改回 `false`，恢复 v1.2.1 的默认拒绝语义。Strm 目标为环回地址（`127.0.0.0/8`、`::1`）时默认拦截；同机部署（本机 Alist / OpenList 等）需显式配置 `allow_loopback: true`
+  - 风险说明：Strm 内容由媒体库文件决定，放行环回后本机任意端口（Emby 管理接口、Redis 等）都可能被其触达；仅在同机部署且确认本机无敏感服务监听时开启
+  - 安全加固：SSRF 校验改为在拨号层对解析结果逐 IP 复核并直连校验通过的 IP，避免「校验用一次 DNS、连接用另一次 DNS」的 DNS rebinding 绕过
+  - 重定向链新增 30s 总预算并透传请求 context，客户端断开后立即终止，避免慢目标长期占用连接
+  - `final_url` 的 HTTP 客户端改用独立连接池（不再退化为 `http.DefaultTransport` 的每主机 2 条空闲连接），并禁用环境代理以确保校验作用于真实目标
+  - 缓存过期清理触发的内存归还增加最小间隔，避免周期性 GC 抖动；HTTPStrm 缓存实例在重建前主动回收，避免重复初始化累积后台协程
+  - 启动日志始终输出 `allow_loopback` 生效值，便于运维确认权限模型
+  - 补充测试：IP 级网段判定 15 例、URL 级校验 9 例、拨号层拦截 / 放行环回 2 例、业务链路 3 例（默认拒绝 / 解析 302 / 缓存命中）、context 取消 1 例
+  - 发布说明的 @ 提及补充校验：映射值含非法账号字符时回退为作者名，空映射键跳过
