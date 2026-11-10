@@ -9,6 +9,16 @@
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-10
+
+### ⚡ 优化
+
+- **[Admin]**: 控制台字号整体放大（正文 `15px → 16px`，控件、标签、表头、辅助文字各 `+1px`），控件高度与侧边栏宽度同步调整；边框统一加粗到 `1.5px` 并提高深色/浅色主题的线条与次要文字对比度，移除会让深色主题笔画发虚的抗锯齿设置；侧边栏底部的版本号与操作按钮改为居中排布。
+
+### 🐛 修复
+
+- **[MediaWarp]**: 修复容器内以相对路径指定 `config.yaml` 时，生成的 `mediawarp.yaml` 与传给 MediaWarp 子进程的 `--config` 被不同工作目录解析，导致代理启动即报 `open config/mediawarp.yaml: no such file or directory` 并回滚配置事务的问题；现在写盘与启动参数统一使用绝对路径，缺失的临时应急办法是把 `config_path` 填为绝对路径 `/config/mediawarp.yaml`。
+
 ## [3.0.0] - 2026-11-10
 
 ### ✨ 新增
@@ -175,7 +185,8 @@
 
 <!-- 底部对比链接 -->
 
-[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zian-yan/AutoFilm/releases/tag/v3.0.0
 [2.2.1]: https://github.com/zian-yan/AutoFilm/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/zian-yan/AutoFilm/compare/v2.1.0...v2.2.0
