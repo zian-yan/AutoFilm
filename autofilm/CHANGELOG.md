@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-16
+
+### 🔧 变更
+
+- **[Admin]**: MediaWarp 配置页改为**按模块分栏**：原先 30 多个字段竖着排成一长条（服务托管 / 监听端口与上游 / 日志与缓存 / 客户端过滤 / HTTPStrm 302 直链五段），找某一段要滚很久。现在五段各占一个分栏，切换只切面板的 `hidden`、不重建表单，切回来时未保存的输入还在；窄屏下分栏横向滚动、标签保持原宽不被压缩；表单校验失败会自动切到出错字段所在的分栏，否则错误被 `hidden` 挡住、无从修改。
+- **[Admin]**: 删除 MediaWarp 的「服务状态」卡片。它原先把进程 PID、可执行文件、端口健康检查、累计重启、上次重启、生成文件、文件一致性 7 个格子铺满半个屏幕，日常查配置反而被挤到折叠以下。运行状态收成配置卡片动作栏里的一颗胶囊（`运行中` + `监听端口`），与「立即重启 / 保存并重启」并排——服务在不在跑、要不要重启本来就是同一件事；7 个诊断值压进胶囊的 `title`，悬停仍可查看，信息没丢而版面还给了表单。手机端动作栏改 2×2 排布，避免 4 个按钮等分一行时标签溢出按钮。
+
 ## [3.1.0] - 2026-11-15
 
 ### 🔧 变更
@@ -214,7 +221,8 @@
 
 <!-- 底部对比链接 -->
 
-[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/zian-yan/AutoFilm/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zian-yan/AutoFilm/releases/tag/v3.0.0

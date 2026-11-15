@@ -267,6 +267,7 @@ pub fn schema() -> Value {
                 "widget": "mediawarp",
                 "groups": [
                     {
+                        "tab_label": "服务托管",
                         "title": "服务托管",
                         "subtitle": "AutoFilm 负责生成配置并管理子进程；关闭托管时只写配置文件，不自动重启",
                         "fields": [
@@ -279,6 +280,7 @@ pub fn schema() -> Value {
                         ]
                     },
                     {
+                        "tab_label": "端口与上游",
                         "title": "监听端口与上游媒体服务器",
                         "subtitle": "对应 MediaWarp 的 port / server 段",
                         "fields": [
@@ -292,6 +294,7 @@ pub fn schema() -> Value {
                         ]
                     },
                     {
+                        "tab_label": "日志与缓存",
                         "title": "日志与缓存",
                         "subtitle": "对应 MediaWarp 的 log / cache 段；TTL 为 Go 时长格式，0 表示关闭该项缓存",
                         "fields": [
@@ -306,6 +309,7 @@ pub fn schema() -> Value {
                         ]
                     },
                     {
+                        "tab_label": "客户端过滤",
                         "title": "客户端过滤",
                         "subtitle": "按 User-Agent 关键字包含关系匹配",
                         "fields": [
@@ -318,6 +322,7 @@ pub fn schema() -> Value {
                         ]
                     },
                     {
+                        "tab_label": "HTTPStrm",
                         "title": "HTTPStrm 302 直链",
                         "subtitle": "对应 MediaWarp 的 http_strm 段；prefix_list 是媒体服务器内 Strm 文件的路径前缀",
                         "fields": [

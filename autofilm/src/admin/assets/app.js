@@ -704,55 +704,48 @@ const MEDIAWARP_MANAGEMENT_KEYS = [
   'stop_timeout_secs',
 ];
 let mediawarpModal = null;
+/** MediaWarp 配置当前展开的模块分栏；只用内存记住，重绘（保存后 / 轮询）不丢。 */
+let mwActiveGroup = 0;
 
-/** 运行状态卡片：只就地刷新内容，不整页重绘，避免打断正在输入的表单。 */
+/**
+ * 运行状态：只渲染一颗胶囊（顶配端口说明），挂在配置卡片的动作栏里。
+ *
+ * 原先这里还有一张「服务状态」卡片摊开 7 个格子，把 PID、健康检查、重启次数
+ * 一次性铺满半个屏幕——那些值只在排障时才看，日常查配置反而被挤到折叠以下。
+ * 卡片删掉后这些诊断值压缩进胶囊的 title，悬停即可看到，信息没丢、版面让给了表单。
+ * 就地刷新而不是整页重绘，避免打断正在输入的表单。
+ */
 function syncMediaWarpStatus() {
-  const host = byId('mediawarp-status');
+  const host = byId('mediawarp-phase');
   if (!host) return;
   const info = (state.runtime && state.runtime.mediawarp) || {};
   const phase = MEDIAWARP_PHASES[info.phase] || MEDIAWARP_PHASES.disabled;
 
   host.textContent = '';
-  const head = element('div', 'mw-status-head');
-  head.appendChild(
+  host.appendChild(
     element(
       'span',
       phase.kind === 'neutral' ? 'pill' : `pill pill-mw-${phase.kind}`,
       phase.label,
     ),
   );
-  head.appendChild(
-    element(
-      'span',
-      'mw-status-caption',
-      info.enabled ? `监听端口 ${info.port || '—'}` : '托管未启用：保存只写配置文件，不会自动重启',
-    ),
-  );
-  host.appendChild(head);
+  // 未托管时胶囊本身已经说明状态，再补一句「托管未启用」是同义重复；
+  // 有端口才补端口——那才是胶囊里没有的信息。
+  if (info.enabled) {
+    host.appendChild(element('span', 'mw-status-caption', `监听端口 ${info.port || '—'}`));
+  }
 
-  const rows = [
-    ['进程 PID', info.pid == null ? '—' : String(info.pid)],
-    ['可执行文件', info.binary || '—'],
-    ['端口健康检查', info.healthy ? '通过' : '未通过'],
-    ['累计重启', String(info.restart_count || 0)],
-    ['上次重启', info.last_restart_at || '—'],
-    ['生成文件', info.config_path || '—'],
-    ['文件与面板一致', info.file_in_sync ? '是' : '否'],
+  const details = [
+    `进程 PID：${info.pid == null ? '—' : info.pid}`,
+    `可执行文件：${info.binary || '—'}`,
+    `端口健康检查：${info.healthy ? '通过' : '未通过'}`,
+    `累计重启：${info.restart_count || 0}`,
+    `上次重启：${info.last_restart_at || '—'}`,
+    `生成文件：${info.config_path || '—'}`,
+    `文件与面板一致：${info.file_in_sync ? '是' : '否'}`,
   ];
-  const grid = element('div', 'mw-status-grid');
-  for (const [label, value] of rows) {
-    const cell = element('div', 'mw-status-item');
-    cell.appendChild(element('span', 'mw-status-label', label));
-    const valueNode = element('span', 'mw-status-value', value);
-    if (label === '生成文件' || label === '可执行文件') valueNode.classList.add('mono');
-    cell.appendChild(valueNode);
-    grid.appendChild(cell);
-  }
-  host.appendChild(grid);
-
-  if (info.last_error) {
-    host.appendChild(element('p', 'mw-status-error', info.last_error));
-  }
+  if (info.last_error) details.push(`最近错误：${info.last_error}`);
+  host.title = details.join('\n');
 
   const restart = byId('mw-restart');
   if (restart) {
@@ -761,20 +754,59 @@ function syncMediaWarpStatus() {
   }
 }
 
-function renderMediaWarpSection(container, section, heading) {
-  const statusCard = element('section', 'card');
-  statusCard.appendChild(
-    cardHead('服务状态', '每 3 秒自动刷新；配置保存后自动写入文件、重启服务并做端口健康检查', null),
-  );
-  const statusBody = element('div', 'card-body padded');
-  const statusHost = element('div', 'mw-status');
-  statusHost.id = 'mediawarp-status';
-  statusBody.appendChild(statusHost);
-  statusCard.appendChild(statusBody);
-  container.appendChild(statusCard);
+/* ---------------- 渲染：MediaWarp 模块分栏 ---------------- */
 
+/** 5 个模块的分栏条。标签取 schema 的 tab_label，留完整标题做无障碍名称。 */
+function mediaWarpTabs(groups) {
+  const bar = element('div', 'segmented mw-tabs');
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'MediaWarp 配置模块');
+  groups.forEach((group, index) => {
+    const current = index === mwActiveGroup;
+    const tab = element(
+      'button',
+      `segmented-item${current ? ' is-active' : ''}`,
+      group.tab_label || group.title,
+    );
+    tab.type = 'button';
+    tab.title = group.title;
+    tab.setAttribute('aria-pressed', current ? 'true' : 'false');
+    tab.addEventListener('click', () => activateMediaWarpGroup(index));
+    bar.appendChild(tab);
+  });
+  return bar;
+}
+
+/**
+ * 切模块：只切面板的 hidden，不重建表单——正在编辑但未保存的输入值留在 DOM 里，
+ * 切回来还在（重建会让用户白填一遍）。
+ */
+function activateMediaWarpGroup(index) {
+  mwActiveGroup = index;
+  for (const panel of document.querySelectorAll('.mw-panel')) {
+    panel.hidden = Number(panel.dataset.group) !== index;
+  }
+  document.querySelectorAll('.mw-tabs .segmented-item').forEach((tab, i) => {
+    tab.classList.toggle('is-active', i === index);
+    tab.setAttribute('aria-pressed', i === index ? 'true' : 'false');
+  });
+}
+
+/** 校验失败时把出错字段所在的模块切出来，否则错误被 hidden 挡住，无从修改。 */
+function revealMediaWarpGroupFor(node) {
+  const panel = node && node.closest ? node.closest('.mw-panel') : null;
+  if (!panel || !panel.hidden) return;
+  activateMediaWarpGroup(Number(panel.dataset.group));
+}
+
+function renderMediaWarpSection(container, section, heading) {
   const wrapper = element('section', 'card');
-  const actions = element('div', 'card-actions');
+  // mw-actions 是给窄屏用的：4 个按钮等分一行时标签会溢出按钮，改 2×2 排布
+  const actions = element('div', 'card-actions mw-actions');
+  // 运行状态与「立即重启 / 保存并重启」是同一件事的两面，放在同一条动作栏里
+  const phase = element('div', 'mw-phase');
+  phase.id = 'mediawarp-phase';
+  actions.appendChild(phase);
   const restart = button('btn btn-ghost btn-small', '立即重启', 'refresh', () =>
     restartMediaWarp(),
   );
@@ -793,9 +825,17 @@ function renderMediaWarpSection(container, section, heading) {
 
   const body = element('div', 'card-body padded');
   const data = sectionData(section) || {};
-  for (const group of section.groups || []) {
+  const groups = section.groups || [];
+  if (mwActiveGroup >= groups.length) mwActiveGroup = 0;
+  if (groups.length > 1) body.appendChild(mediaWarpTabs(groups));
+
+  const panels = element('div', 'mw-panels');
+  groups.forEach((group, index) => {
+    const panel = element('div', 'mw-panel');
+    panel.dataset.group = String(index);
+    panel.hidden = index !== mwActiveGroup;
     const block = element('div', 'mw-group');
-    block.appendChild(element('h3', 'mw-group-title', group.title));
+    // 模块名已在分栏上，这里只留一句说明当前模块管什么
     if (group.subtitle) block.appendChild(element('p', 'mw-group-sub', group.subtitle));
     const grid = element('div', 'editor-grid');
     for (const field of group.fields || []) {
@@ -803,8 +843,10 @@ function renderMediaWarpSection(container, section, heading) {
       if (node) grid.appendChild(node);
     }
     block.appendChild(grid);
-    body.appendChild(block);
-  }
+    panel.appendChild(block);
+    panels.appendChild(panel);
+  });
+  body.appendChild(panels);
   wrapper.appendChild(body);
   container.appendChild(wrapper);
   syncMediaWarpStatus();
@@ -2177,6 +2219,7 @@ function applyErrors(errors) {
   for (const error of errors) {
     const container = document.querySelector(`[data-field="${error.field}"]`);
     if (!container) continue;
+    revealMediaWarpGroupFor(container);
     container.classList.add('is-invalid');
     const row = container.closest('tr');
     if (row) row.classList.add('is-invalid');

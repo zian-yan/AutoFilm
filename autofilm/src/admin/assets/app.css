@@ -1806,6 +1806,22 @@ p {
     min-height: 44px;
   }
 
+  /* 5 个模块在 390px 上等分会把标签挤没：改横向滚动、标签保持原宽 */
+  .mw-tabs {
+    width: 100%;
+  }
+
+  .mw-tabs .segmented-item {
+    flex: 0 0 auto;
+    padding: 0 14px;
+  }
+
+  /* 状态胶囊在窄屏独占一行，按钮另起一行等宽排布 */
+  .mw-phase {
+    flex: 1 0 100%;
+    margin-right: 0;
+  }
+
   .card {
     border-radius: var(--r-lg);
   }
@@ -1826,6 +1842,18 @@ p {
   .card-actions .btn {
     flex: 1;
     min-width: 0;
+  }
+
+  /* MediaWarp 有 4 个按钮：等分一行时每个只剩 74px，图标 + 5 个汉字会溢出按钮
+     外壳（文字顶出胶囊外沿），改成 2×2 两行，每个约 160px。
+     间距同时收到 8px：基数是 `50% - 4px`，两列刚好 50%×2 + 8 填满整行，不会因为
+     默认的 10px 间距多出 2px 而被挤成一行一个。 */
+  .mw-actions {
+    gap: var(--s-2);
+  }
+
+  .mw-actions .btn {
+    flex: 1 1 calc(50% - var(--s-1));
   }
 
   .card-body.padded {
@@ -1944,11 +1972,13 @@ p {
 /* ==================== MediaWarp 服务面板 ==================== */
 /* 只复用既有令牌与语义色，不引入新的强调色；状态卡片与分组表单都保持 L1~L4 层级。 */
 
-.mw-status-head {
+/* 卡片头动作栏里的运行状态：胶囊 + 端口说明，紧挨在「立即重启 / 保存并重启」左侧，
+   因为「服务在不在跑」和「重启 / 保存并重启」是同一件事的两面 */
+.mw-phase {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
-  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-right: var(--s-2);
 }
 
 .mw-status-caption {
@@ -1971,70 +2001,33 @@ p {
   background: var(--danger-tint);
 }
 
-/* 状态格子改成"灰底小卡片"，与 iOS 分组里的信息块同构；
-   220px 下限让 7 项在桌面宽度上落成 4+3 两行，比 5+2 更均衡 */
-.mw-status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--s-3);
-  margin-top: var(--s-4);
+/* 模块分栏：5 项、标签较长，按内容宽度排布而不是等分拉伸；放不下时横向滚动，
+   不压缩文字（iOS 分段控件没有滚动形态，但这里窄到 390px 时等分会把标签切掉） */
+.mw-tabs {
+  display: inline-flex;
+  max-width: 100%;
+  margin-bottom: var(--s-4);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.mw-status-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-lg);
-  background: var(--surface-alt);
+.mw-tabs::-webkit-scrollbar {
+  display: none;
 }
 
-.mw-status-label {
-  font-size: 12px;
-  font-weight: var(--w-semibold);
-  color: var(--muted);
-}
-
-.mw-status-value {
-  font-size: 14px;
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-
-.mw-status-error {
-  margin-top: var(--s-4);
-  padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-md);
-  background: var(--danger-tint);
-  font-size: var(--t-caption);
-  line-height: 1.55;
-  color: var(--danger);
-}
-
-.mw-group + .mw-group {
-  margin-top: var(--s-6);
-  padding-top: var(--s-5);
-  border-top: 1px solid var(--line);
-}
-
-.mw-group-title {
-  margin: 0;
-  font-size: var(--t-body);
-  font-weight: var(--w-semibold);
-  letter-spacing: -0.008em;
-  color: var(--ink);
+.mw-tabs .segmented-item {
+  flex: 0 0 auto;
 }
 
 .mw-group-sub {
-  margin-top: var(--s-1);
+  margin-bottom: var(--s-4);
   font-size: var(--t-caption);
   line-height: 1.45;
   color: var(--muted);
 }
 
 .mw-group .editor-grid {
-  margin-top: var(--s-4);
+  margin-top: 0;
 }
 
 .mw-modal-path {
