@@ -36,6 +36,8 @@ const state = {
   runtime: {},
   // 由 applyState 依据地址栏 hash 决定，空 hash 落到首个配置分区。
   active: '',
+  /** 当前页面内的分栏（子分区 key），空表示第一个分栏。 */
+  tab: '',
   dirty: false,
   saving: false,
   /** 顶部保存状态指示：saved / dirty / saving / error / invalid。 */
@@ -531,6 +533,8 @@ function defaultSectionKey() {
 /** 切换分区：同步到地址栏 hash，刷新或分享链接后仍停留在同一分区。 */
 function setActive(key) {
   state.active = key;
+  // 换页面时丢弃上一页的分栏选择，避免「全局设置」被带到别的页面
+  state.tab = '';
   closeEditor(false);
   const hash = key === defaultSectionKey() ? '' : `#${encodeURIComponent(key)}`;
   if (window.location.hash !== hash) {
@@ -556,10 +560,13 @@ function currentSection() {
   return sections.find((section) => section.key === state.active) || sections[0] || null;
 }
 
-function updateChrome() {
+function updateChrome(active) {
   const section = currentSection();
   byId('section-title').textContent = section ? section.title : '';
-  byId('section-subtitle').textContent = section ? section.subtitle || '' : '';
+  // 标题是页面级的（如「Strm 任务」），副标题跟随当前分栏：切到「全局设置」时
+  // 应该说明全局设置管什么，而不是继续讲任务扫描。
+  const subtitle = (active && active.subtitle) || (section && section.subtitle) || '';
+  byId('section-subtitle').textContent = subtitle;
 }
 
 function render() {
@@ -567,11 +574,17 @@ function render() {
   const content = byId('content');
   content.textContent = '';
 
-  // 宿主页依次渲染自身卡片与下方子分区卡片；保存动作在各卡片 / 弹窗内完成。
-  pageSections(currentSection()).forEach((section, index) => {
-    renderSection(content, section, index > 0 ? section.title : null);
-  });
-  updateChrome();
+  // 宿主页可挂多个分区（目前是「任务 / 全局设置」）。这类分区是同一件事的两面，
+  // 堆成上下两张卡片会让后者看起来像另一组任务，因此用分栏切换。
+  const sections = pageSections(currentSection());
+  const active = sections.length > 1 ? resolveTab(sections) : null;
+  if (active) {
+    content.appendChild(segmentedControl(sections, active));
+    renderSection(content, active, null);
+  } else {
+    for (const section of sections) renderSection(content, section, null);
+  }
+  updateChrome(active);
   renderEditorModal();
   syncLocks();
 }
@@ -584,6 +597,61 @@ function renderSection(container, section, heading) {
   } else {
     renderListSection(container, section, heading);
   }
+}
+
+/* ---------------- 渲染：分栏 ---------------- */
+
+/**
+ * 一个页面挂多个分区时（任务 / 全局设置）用分栏切换，而不是上下堆两张卡片。
+ *
+ * 选中的分栏记在地址栏 hash 上（子分区 key），刷新或分享链接后仍停在原来的分栏；
+ * hash 为空或指向父分区时落到第一个分栏。`state.tab` 只用于记住点击结果，
+ * 真正的判定以 hash 优先，避免两者打架。
+ */
+function resolveTab(sections) {
+  const hashKey = decodeURIComponent((window.location.hash || '').replace(/^#/, '')).trim();
+  return (
+    sections.find((section) => section.key === hashKey) ||
+    sections.find((section) => section.key === state.tab) ||
+    sections[0]
+  );
+}
+
+function segmentedControl(sections, active) {
+  const bar = element('div', 'segmented');
+  // 用「按钮组 + aria-pressed」而不是 tablist：后者要求配套的 tabpanel 与
+  // aria-controls，这里切换的是整块内容区，按按钮组标注更符合实际语义。
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', '页面分栏');
+  for (const section of sections) {
+    const current = section.key === active.key;
+    const tab = element(
+      'button',
+      `segmented-item${current ? ' is-active' : ''}`,
+      section.tab_label || section.title,
+    );
+    tab.type = 'button';
+    tab.setAttribute('aria-pressed', current ? 'true' : 'false');
+    tab.addEventListener('click', () => switchTab(section.key));
+    bar.appendChild(tab);
+  }
+  return bar;
+}
+
+function switchTab(key) {
+  const sections = pageSections(currentSection());
+  if (!sections.length || key === resolveTab(sections).key) return;
+  state.tab = key;
+  // 分栏切换前先收起弹窗：任务编辑弹窗的内容属于「任务」分栏，留在屏幕上会与
+  // 刚切换过来的「全局设置」并置，语义冲突。
+  closeEditor(false);
+  clearAlert();
+  // 首个分栏就是页面本身，hash 留空；其余分栏用子分区 key 记址。
+  const hash = sections[0].key === key ? '' : `#${encodeURIComponent(key)}`;
+  if (window.location.hash !== hash) {
+    window.history.replaceState(null, '', hash || window.location.pathname);
+  }
+  render();
 }
 
 /* ---------------- 渲染：卡片 ---------------- */
@@ -2255,10 +2323,15 @@ function bindChrome() {
   logoutButton.addEventListener('click', logout);
   window.addEventListener('hashchange', () => {
     const key = activeFromHash();
-    if (key === state.active) return;
-    state.active = key;
-    closeEditor(false);
-    renderNav();
+    if (key !== state.active) {
+      state.active = key;
+      state.tab = '';
+      closeEditor(false);
+      renderNav();
+      render();
+      return;
+    }
+    // 页面没变、只是 hash 指向了另一个分栏：重绘即可，resolveTab 会读到新 hash
     render();
   });
   window.addEventListener('beforeunload', (event) => {

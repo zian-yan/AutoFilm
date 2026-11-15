@@ -133,6 +133,10 @@ html[data-theme="light"] {
   --field-bg-hover: #eaeaec;
   /* 聚焦时控件底色：浅色浮起到纯白，形成"被点亮"的层次 */
   --field-focus-bg: #ffffff;
+  /* 分栏选中项：在灰轨道上浮起为纯白 */
+  --seg-track: rgba(0, 0, 0, 0.06);
+  --seg-active: #ffffff;
+  --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 1px rgba(0, 0, 0, 0.04);
   --fill: rgba(0, 0, 0, 0.04);
   --fill-hover: rgba(0, 0, 0, 0.07);
 
@@ -189,6 +193,11 @@ html[data-theme="dark"] {
   --field-bg-hover: #363638;
   /* 深色下不能浮到 #1c1c1e（与卡片同色会"消失"），保持填充色只加环 */
   --field-focus-bg: #2c2c2e;
+  /* 深色轨道用 #1c1c1e 而非半透明白：叠在纯黑页面上才看得出边界；
+     选中项再抬到 #48484a，才是 iOS 深色分段控件的"浮起"量级 */
+  --seg-track: #1c1c1e;
+  --seg-active: #48484a;
+  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
   --fill: rgba(255, 255, 255, 0.08);
   --fill-hover: rgba(255, 255, 255, 0.13);
 
@@ -556,6 +565,55 @@ p {
   display: flex;
   flex-direction: column;
   gap: var(--s-5);
+}
+
+/* ==================== 分栏（Segmented Control） ==================== */
+
+/* iOS 分段控件：一条浅灰轨道，选中项"浮"成表面色并带一层薄阴影。
+   不拉伸到整行 —— 它是页面内的局部切换器，不是主导航。 */
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-pill);
+  background: var(--seg-track);
+}
+
+.segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: var(--w-medium);
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.segmented-item:hover:not(.is-active) {
+  color: var(--ink);
+}
+
+.segmented-item.is-active {
+  background: var(--seg-active);
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+  box-shadow: var(--seg-shadow);
+}
+
+.segmented-item:active:not(.is-active) {
+  transform: scale(0.97);
 }
 
 /* ==================== 卡片 ==================== */
@@ -1685,6 +1743,16 @@ p {
 
   .content {
     gap: var(--s-4);
+  }
+
+  /* 手机上分栏占满整行、两项等宽，触控目标抬到 44px */
+  .segmented {
+    width: 100%;
+  }
+
+  .segmented-item {
+    flex: 1;
+    min-height: 44px;
   }
 
   .card {

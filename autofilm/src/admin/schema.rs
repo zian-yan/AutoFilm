@@ -81,13 +81,18 @@ pub fn schema() -> Value {
                 }
             },
             {
-                // 独立顶层分区：过去用 parent 挂在 alist2strm_tasks 页面下方，
-                // 容易被当成「面板设置」。现在和 web_section 一样是侧边栏独立入口，
-                // 但两者数据源不同（config.yaml / web.yaml）、保存接口不同，绝不合并。
+                // 挂在 alist2strm_tasks 页面下（parent），不再单独占一个侧边栏入口：
+                // 两者是同一件事的「任务」与「公共策略」两面，前端用分栏切换。
+                // 注意数据源不同：本分区与任务列表都来自 config.yaml，保存走同一个接口，
+                // 因此合并到一页不涉及任何跨文件事务；web_section 的 detached 才是另一回事。
                 "key": "alist2strm",
+                "parent": "alist2strm_tasks",
                 "title": "同步全局设置",
+                "tab_label": "全局设置",
                 "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效；属于业务配置，保存在 config.yaml",
-                "item_label": "同步全局设置",
+                // 卡片头标题：分栏已经写着「全局设置」，这里再重复一遍会浪费一行的信息量，
+                // 改用它实际承载的内容命名。
+                "item_label": "同步策略",
                 "single": true,
                 "addable": false,
                 "removable": false,
@@ -108,8 +113,9 @@ pub fn schema() -> Value {
             },
             {
                 "key": "alist2strm_tasks",
-                "title": "Alist2Strm 任务",
-                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除在侧边栏「同步全局设置」中统一配置",
+                "title": "Strm 任务",
+                "tab_label": "任务",
+                "subtitle": "把 AList 上的视频扫描成本地 .strm 文件；并发、伴生文件下载与同步删除等公共策略在「全局设置」分栏中统一配置",
                 "item_label": "同步任务",
                 "addable": true,
                 "removable": true,
@@ -147,7 +153,7 @@ pub fn schema() -> Value {
             },
             {
                 "key": "ani2alist_tasks",
-                "title": "Ani2Alist 任务",
+                "title": "Ani 任务",
                 "subtitle": "按 RSS、当前季度或关键字解析番剧目录，并以 UrlTree 形式写入 AList",
                 "item_label": "追番任务",
                 "addable": true,
@@ -330,7 +336,7 @@ pub fn schema() -> Value {
         ],
         // 面板配置单独下发：它保存在 web.yaml，与业务配置的版本号、保存接口
         // 完全独立，前端用 detached 标记把它当成独立表单渲染与提交。
-        // 导航上用「面板自身」分组与业务分区隔开，避免与同步全局设置混淆。
+        // 导航上用「面板自身」分组与业务分区隔开，避免被当成业务配置。
         "web_section": {
             "key": "web",
             "title": "Web 面板",
