@@ -1682,13 +1682,12 @@ const LOG_LINE_RE = /^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?:(\[(?:ERROR|WARN|DEBU
 
 /**
  * 动作词 → 颜色。同一动作在所有任务里必须是同一个颜色，因此只在这里维护一份
- * 映射：生成类（写文件）绿、下载类（拉远端）橙、删除类（清理本地）红。
- * `op` 给动作词上色，`row` 给整行加同色左侧色条。
+ * 映射：生成类（写文件）绿、下载/复制类（搬伴生文件）橙、删除类（清理本地）红。
  */
 const LOG_OP_RULES = [
-  { row: 'log-row-delete', op: 'log-op-delete', pattern: /^删除/ },
-  { row: 'log-row-fetch', op: 'log-op-fetch', pattern: /^下载/ },
-  { row: 'log-row-make', op: 'log-op-make', pattern: /^(生成|更新|写入)/ },
+  { className: 'log-op-delete', pattern: /^删除/ },
+  { className: 'log-op-fetch', pattern: /^(下载|复制)/ },
+  { className: 'log-op-make', pattern: /^(生成|更新|写入)/ },
 ];
 
 /** 日志行距离底部多少像素内仍视为「贴底」，用于决定新行是否自动跟随滚动。 */
@@ -1699,9 +1698,8 @@ function logOpRule(message) {
 }
 
 /**
- * 单行日志的富文本渲染：时间戳与级别标记压成次要色，动作词染色并给整行加同色
- * 色条，其余（路径、统计数字）保持正文色。染色只覆盖动作词与紧随其后的冒号，
- * 长路径不会被整行涂色，密集滚动时依然能靠行首颜色区分操作类型。
+ * 单行日志的富文本渲染：整行按动作类型上色（生成绿 / 下载橙 / 删除红），动作词
+ * 再加粗，时间戳与级别标记降透明度。非动作行保持正文色，避免满屏彩色。
  */
 function renderLogLine(line) {
   const node = element('div', 'log-line');
@@ -1724,10 +1722,10 @@ function renderLogLine(line) {
     return node;
   }
 
-  node.classList.add(rule.row);
+  node.classList.add(rule.className);
   const next = message.charAt(2);
   const colon = next === ':' || next === '：' ? next : '';
-  node.appendChild(element('span', `log-op ${rule.op}`, `${message.slice(0, 2)}${colon}`));
+  node.appendChild(element('span', 'log-op', `${message.slice(0, 2)}${colon}`));
   node.appendChild(document.createTextNode(message.slice(2 + colon.length)));
   return node;
 }
