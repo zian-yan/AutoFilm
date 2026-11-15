@@ -53,6 +53,9 @@ pub enum Error {
     #[error("编码 PNG 失败: {0}")]
     EncodeImage(image::ImageError),
 
+    #[error("渲染线程异常退出: {0}")]
+    RenderTask(String),
+
     #[error("创建海报输出目录失败: {path}")]
     CreateOutput {
         path: PathBuf,
@@ -189,16 +192,27 @@ impl LibraryPoster {
                 .download_image(&reference.item_id, reference.kind, reference.tag.as_deref())
                 .await
             {
-                Ok(bytes) => match decode_image(&bytes) {
-                    Ok(image) => images.push(image),
-                    Err(err) => warn!(
-                        task_id = %self.config.id,
-                        library = %library.name,
-                        item_id = %reference.item_id,
-                        error = %err,
-                        "媒体图片解码失败，尝试下一张素材"
-                    ),
-                },
+                Ok(bytes) => {
+                    // 解码是纯 CPU 工作（4K 素材几十毫秒），放阻塞线程池执行，
+                    // 否则会占住 tokio worker，让面板与其它任务一起卡住。
+                    match tokio::task::spawn_blocking(move || decode_image(&bytes)).await {
+                        Ok(Ok(image)) => images.push(image),
+                        Ok(Err(err)) => warn!(
+                            task_id = %self.config.id,
+                            library = %library.name,
+                            item_id = %reference.item_id,
+                            error = %err,
+                            "媒体图片解码失败，尝试下一张素材"
+                        ),
+                        Err(err) => warn!(
+                            task_id = %self.config.id,
+                            library = %library.name,
+                            item_id = %reference.item_id,
+                            error = %err,
+                            "媒体图片解码任务异常，尝试下一张素材"
+                        ),
+                    }
+                }
                 Err(err) => warn!(
                     task_id = %self.config.id,
                     library = %library.name,
@@ -217,14 +231,19 @@ impl LibraryPoster {
         } else {
             library_config.title.as_str()
         };
-        let poster = renderer::render(
-            &images,
-            title,
-            &library_config.subtitle,
-            &self.fonts,
-            render_config,
-        )?;
-        let png = encode_png(poster)?;
+        // 渲染（高斯模糊 + 拼贴）与 PNG 编码是整条链路里最重的 CPU 工作，
+        // 必须离开异步线程；否则在低核数机器上会冻结面板和定时任务。
+        let title = title.to_string();
+        let subtitle = library_config.subtitle.clone();
+        let render_config = render_config.clone();
+        let fonts = self.fonts.clone();
+        let image_count = images.len();
+        let png = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let poster = renderer::render(&images, &title, &subtitle, &fonts, &render_config)?;
+            encode_png(poster)
+        })
+        .await
+        .map_err(|err| Error::RenderTask(err.to_string()))??;
 
         let saved = if let Some(output_dir) = &self.config.output_dir {
             let output_path = output_path(output_dir, &self.config.id, &library.name);
@@ -256,7 +275,7 @@ impl LibraryPoster {
         };
 
         Ok(LibraryResult {
-            downloaded_images: images.len(),
+            downloaded_images: image_count,
             saved,
             uploaded,
         })
