@@ -159,11 +159,63 @@ pub fn local_dir(
 fn sanitize_components(path: &Path) -> PathBuf {
     let mut sanitized = PathBuf::new();
     for component in path.components() {
-        if let Component::Normal(part) = component {
-            sanitized.push(part);
+        let Component::Normal(part) = component else {
+            continue;
+        };
+
+        // 非 Windows 平台保持原名：这里只做安全过滤，不做编码规范转换，
+        // 否则升级后会把大量合法文件平白重命名。
+        #[cfg(not(windows))]
+        sanitized.push(part);
+
+        #[cfg(windows)]
+        {
+            let segment = sanitize_segment(&part.to_string_lossy());
+            if !segment.is_empty() {
+                sanitized.push(segment);
+            }
         }
     }
     sanitized
+}
+
+/// Windows 保留设备名，不能作为文件名主干。
+#[cfg(windows)]
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// 把单个路径片段收敛成 Windows 上真正能落盘的名字。
+///
+/// 远端文件名属于外部输入：`?` `*` `:` 等字符以及 `CON` / `NUL` 之类设备名
+/// 会让写盘直接失败（不是目录逃逸，但会让该文件每轮都被跳过）。
+#[cfg(windows)]
+fn sanitize_segment(segment: &str) -> String {
+    let replaced: String = segment
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
+            ch if (ch as u32) < 0x20 => '_',
+            ch => ch,
+        })
+        .collect();
+
+    // Windows 会静默忽略结尾的空格与点，导致「名字对不上」，这里直接裁掉。
+    let trimmed = replaced.trim_end_matches([' ', '.']);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let stem = trimmed
+        .split('.')
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_uppercase();
+    if WINDOWS_RESERVED.contains(&stem.as_str()) {
+        return format!("_{trimmed}");
+    }
+    trimmed.to_string()
 }
 
 /// 把远端文件名收敛为单个安全的文件名。
@@ -328,5 +380,38 @@ mod tests {
             Some(PathBuf::from("/media/ani/2026/01"))
         );
         assert_eq!(local_dir("/ani", target_dir, "/ani/2026", true), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_illegal_characters_and_reserved_names_are_fixed() {
+        let target_dir = Path::new(r"C:\media");
+
+        // 保留设备名加前缀，否则 Windows 直接拒绝创建。
+        assert_eq!(
+            local_path("/ani/CON", "CON", "/ani", target_dir, true, None),
+            PathBuf::from(r"C:\media\_CON")
+        );
+
+        // 非法字符换成下划线，视频扩展名照常转成 .strm。
+        // 注意 `:` 会被 `Path` 当成盘符前缀直接丢弃，这里用文件系统同样拒绝的
+        // `?` / `*` 来验证字符替换。
+        assert_eq!(
+            local_path("/ani/a?b*.mkv", "a?b*.mkv", "/ani", target_dir, true, None),
+            PathBuf::from(r"C:\media\a_b_.strm")
+        );
+
+        // 结尾的点会被系统静默忽略，这里主动裁掉，避免「名字对不上」。
+        assert_eq!(
+            local_path(
+                "/ani/trailing.",
+                "trailing.",
+                "/ani",
+                target_dir,
+                true,
+                None
+            ),
+            PathBuf::from(r"C:\media\trailing")
+        );
     }
 }
