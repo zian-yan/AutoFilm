@@ -998,7 +998,9 @@ function renderListSection(container, section, heading) {
 
   const actions = element('div', 'card-actions');
   if (section.module) {
-    actions.appendChild(button('btn btn-primary', '运行所有', 'bolt', () => runAll(section)));
+    // 「运行所有」是分区级次要动作，用次级按钮；主按钮留给「添加」，一屏只有
+    // 一个实心蓝，避免两个同权重色块互相稀释。
+    actions.appendChild(button('btn btn-ghost', '运行所有', 'bolt', () => runAll(section)));
   }
   if (section.addable) {
     actions.appendChild(

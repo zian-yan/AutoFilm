@@ -57,6 +57,17 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         return Response::new(200, "image/x-icon", assets::FAVICON_ICO);
     }
 
+    // 主题预判定脚本要进 `<head>` 且先于样式表执行，登录页与主面板都得能取到；
+    // 它不含任何配置数据，因此放在认证判断之前无条件放行（否则未启用认证时会被
+    // 登录页分支重定向回首页，主面板拿不到脚本，首帧闪烁依旧存在）。
+    if request.method == "GET" && request.path == "/assets/theme.js" {
+        return Response::new(
+            200,
+            "application/javascript; charset=utf-8",
+            assets::THEME_JS,
+        );
+    }
+
     if auth.enabled() {
         let client = client_key(request);
         if let Some(remaining) = ctx.guard.locked_remaining(&client) {
