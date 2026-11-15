@@ -190,27 +190,29 @@ impl AdminContext {
     /// 解析规则与调度器一致（秒必填、日与周同时生效、使用配置时区），因此面板
     /// 展示的时间就是调度器真正触发的时间；cron 缺失或非法时不返回该键。
     pub fn next_runs_json(&self) -> serde_json::Value {
-        let config = self.store.snapshot().config;
-        let mut entries: Vec<(String, Option<String>)> = Vec::new();
-
-        for task in &config.alist2strm_tasks {
-            entries.push((
-                format!("{}:{}", schedule::MODULE_ALIST2STRM, task.id),
-                task.cron.clone(),
-            ));
-        }
-        for task in &config.ani2alist_tasks {
-            entries.push((
-                format!("{}:{}", schedule::MODULE_ANI2ALIST, task.id),
-                task.cron.clone(),
-            ));
-        }
-        for task in &config.library_poster_tasks {
-            entries.push((
-                format!("{}:{}", schedule::MODULE_LIBRARY_POSTER, task.id),
-                task.cron.clone(),
-            ));
-        }
+        // 只读锁内直接遍历任务列表，不克隆整份业务配置。
+        let entries = self.store.with_config(|config| {
+            let mut entries: Vec<(String, Option<String>)> = Vec::new();
+            for task in &config.alist2strm_tasks {
+                entries.push((
+                    format!("{}:{}", schedule::MODULE_ALIST2STRM, task.id),
+                    task.cron.clone(),
+                ));
+            }
+            for task in &config.ani2alist_tasks {
+                entries.push((
+                    format!("{}:{}", schedule::MODULE_ANI2ALIST, task.id),
+                    task.cron.clone(),
+                ));
+            }
+            for task in &config.library_poster_tasks {
+                entries.push((
+                    format!("{}:{}", schedule::MODULE_LIBRARY_POSTER, task.id),
+                    task.cron.clone(),
+                ));
+            }
+            entries
+        });
 
         let mut map = serde_json::Map::new();
         for (key, cron) in entries {

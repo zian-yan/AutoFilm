@@ -85,6 +85,15 @@ impl<T: Persist> Store<T> {
         }
     }
 
+    /// 在只读锁内访问配置。
+    ///
+    /// 用于「只需要少量字段」的查询：面板每 3 秒拉一次运行时数据，为了算下次
+    /// 运行时间就克隆整份业务配置（含所有任务路径）并不划算。
+    pub fn with_config<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let state = self.state.read().unwrap_or_else(|err| err.into_inner());
+        f(&state.config)
+    }
+
     /// 读取当前配置版本号。
     pub fn version(&self) -> u64 {
         self.state
