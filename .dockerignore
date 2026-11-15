@@ -1,6 +1,6 @@
 # Docker 构建上下文是【仓库根目录】，需要同时包含：
 #   autofilm/   —— Rust 源码
-#   mediawarp/  —— Go 源码
+#   mediawarp/  —— Go 源码（git submodule，构建前需已检出）
 #   .git        —— vergen-gix 生成版本信息（仅 autofilm/docker/Dockerfile 使用）
 #   targets/    —— CI 预编译的 Rust 二进制（仅 autofilm/docker/Dockerfile.ci 使用）
 # 以下大体积产物、本地配置与密钥一律排除。
@@ -23,6 +23,7 @@ autofilm/**/*.bak
 autofilm/**/*.tmp
 
 mediawarp/.github
+mediawarp/.git
 mediawarp/logs
 mediawarp/dist
 mediawarp/img

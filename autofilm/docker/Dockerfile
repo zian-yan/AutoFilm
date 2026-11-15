@@ -2,7 +2,8 @@
 #
 # 构建上下文必须是【仓库根目录】（同时包含 autofilm/ 与 mediawarp/）：
 #   docker build -f autofilm/docker/Dockerfile -t autofilm:local .
-# 两个项目的源码都在本仓库内，构建过程不再 clone GitHub。
+# mediawarp/ 是 git submodule，构建前先 `git submodule update --init`；两个项目的源码
+# 都从本地上下文取，构建过程不再 clone GitHub。
 
 FROM rust:alpine AS builder
 
@@ -25,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked && \
     cp /workspace/target/release/autofilm /tmp/autofilm
 
-# MediaWarp 直接使用仓库内 mediawarp/ 源码编译（v1.2.3），不再联网 clone。
+# MediaWarp 使用 submodule mediawarp/（zian-yan/MediaWarp，当前指向 v1.2.3）的源码编译。
 # Go 依赖仍由 go mod download 从模块代理获取；如需完全离线，先在 mediawarp/
 # 下执行 `go mod vendor`，并把下面的构建改成 `go build -mod=vendor`。
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS mediawarp-builder

@@ -25,6 +25,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # mediawarp/ 是 submodule，镜像内的 MediaWarp 由它现场编译，必须一并检出
+          submodules: recursive
 
       - name: Resolve image registries
         id: registry

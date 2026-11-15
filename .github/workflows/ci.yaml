@@ -11,6 +11,9 @@ on:
       - "mediawarp/**/*.go"
       - "mediawarp/go.mod"
       - "mediawarp/go.sum"
+      # mediawarp/ 改为 submodule 后，指针更新在 diff 里表现为单个路径 `mediawarp`
+      - "mediawarp"
+      - ".gitmodules"
       - ".github/workflows/**"
   pull_request:
   workflow_dispatch:

@@ -1,6 +1,6 @@
 # 仓库聚合根
 #   autofilm/   —— AutoFilm（Rust）源码，构建工作目录为 autofilm/
-#   mediawarp/  —— MediaWarp（Go）上游源码，v1.2.3
+#   mediawarp/  —— MediaWarp（Go）源码，以 git submodule 指向 zian-yan/MediaWarp（见 .gitmodules）
 #   .github/    —— 仓库级 CI：GitHub Actions 只识别仓库根的 .github/workflows
 
 .workbuddy/
@@ -19,13 +19,10 @@ autofilm/alist-client-rs/target/*
 autofilm/__pycache__/*
 autofilm/.mypy_cache/*
 
-# ---------- MediaWarp：本地配置与构建产物 ----------
-mediawarp/config/config.yaml
-mediawarp/logs/*
-mediawarp/custom/*
-mediawarp/dist/
-mediawarp/MediaWarp
-mediawarp/MediaWarp.exe
+# ---------- MediaWarp：忽略规则由子模块自身 .gitignore 负责 ----------
+# mediawarp/ 是 git submodule（zian-yan/MediaWarp），父仓库的 ignore 规则不会穿透进去；
+# 其 config/config.yaml、logs/、custom/、dist/、二进制由子模块的 .gitignore 忽略。
+# 首次克隆需要 `git clone --recursive` 或 `git submodule update --init --recursive`。
 
 .DS_Store
 *bak

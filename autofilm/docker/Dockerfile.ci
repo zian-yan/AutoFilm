@@ -1,5 +1,6 @@
 # 发布镜像同样内置 MediaWarp：Rust 二进制由 CI 预编译，Go 二进制在这里交叉编译。
-# 构建上下文是仓库根目录：targets/ 放预编译的 Rust 二进制，mediawarp/ 放 Go 源码。
+# 构建上下文是仓库根目录：targets/ 放预编译的 Rust 二进制，mediawarp/ 放 Go 源码
+# （git submodule，CI 的 checkout 已带 submodules: recursive）。
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS mediawarp-builder
 
 ARG TARGETARCH=amd64
