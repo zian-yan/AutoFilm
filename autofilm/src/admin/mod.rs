@@ -239,7 +239,7 @@ impl AdminContext {
         if let serde_json::Value::Object(map) = &mut runtime {
             map.insert("next_runs".to_string(), self.next_runs_json());
             map.insert("running".to_string(), self.running_json());
-            // 服务状态随 3 秒轮询一起下发，MediaWarp 页的状态卡片无需单独接口。
+            // 服务状态随 3 秒轮询一起下发，MediaWarp 页的状态胶囊就地刷新，无需单独接口。
             map.insert("mediawarp".to_string(), self.mediawarp.status_json());
         }
         runtime

@@ -255,8 +255,8 @@ pub fn schema() -> Value {
             },
             {
                 // MediaWarp：数据仍在 config.yaml（复用业务配置的保存与版本控制），
-                // 但页面由 app.js 按 widget 标记定制渲染——多一张服务状态卡片，
-                // 并把 30 多个原生字段按 groups 分组，避免一屏铺满输入框。
+                // 但页面由 app.js 按 widget 标记定制渲染——把 30 多个原生字段按
+                // groups 拆成模块分栏，避免一屏铺满输入框。
                 "key": "mediawarp",
                 "title": "MediaWarp",
                 "subtitle": "前置于 Emby / Jellyfin 的反向代理（HTTPStrm 302 直链）；本页配置保存后自动生成 config/mediawarp.yaml 并重启代理服务",
