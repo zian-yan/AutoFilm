@@ -965,6 +965,9 @@ function columnsOf(section) {
     label: column.label,
     kind: column.kind || 'text',
     map: column.map || null,
+    // tones：枚举值 → 胶囊色号（Jellyfin 紫 / Emby 绿）。这里必须显式透传，
+    // 早先把 column 重建成了白名单对象，schema 里的新字段会被默默丢掉
+    tones: column.tones || null,
   }));
   if (section.next_run) columns.push({ key: '__next_run', label: '下次运行', kind: 'next_run' });
   return columns;
@@ -1274,7 +1277,13 @@ function cellContent(section, item, column) {
     case 'map': {
       const text = raw == null ? '' : String(raw);
       if (!text) return element('span', 'cell-dim', '—');
-      return element('span', null, (column.map && column.map[text]) || text);
+      const label = (column.map && column.map[text]) || text;
+      // tones 由 schema 指定枚举值 → 色号（如 Jellyfin 紫、Emby 绿）。只有需要一眼
+      // 分辨的枚举才配胶囊，其余 map 列仍走纯文本，避免满屏都是小胶囊。
+      const tone = column.tones && column.tones[text];
+      return tone
+        ? element('span', `chip-ref tone-${tone}`, label)
+        : element('span', null, label);
     }
     default: {
       const text = raw == null ? '' : String(raw);

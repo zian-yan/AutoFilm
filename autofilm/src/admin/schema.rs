@@ -55,7 +55,7 @@ pub fn schema() -> Value {
                 "table": {
                     "columns": [
                         { "key": "id", "label": "名称" },
-                        { "key": "kind", "label": "类型", "kind": "map", "map": { "jellyfin": "Jellyfin", "emby": "Emby" } },
+                        { "key": "kind", "label": "类型", "kind": "map", "map": { "jellyfin": "Jellyfin", "emby": "Emby" }, "tones": { "jellyfin": 2, "emby": 4 } },
                         { "key": "base_url", "label": "地址" },
                         { "key": "timeout", "label": "超时（秒）" }
                     ]

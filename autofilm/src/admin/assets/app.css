@@ -510,18 +510,18 @@ p {
   gap: 6px;
 }
 
-/* 版本号做成中性小胶囊，与右侧按钮同一视觉重量 */
+/* 版本号做成小胶囊，用第 3 档色相（青绿）标出「构建信息」，与下面的动作按钮区分开 */
 .version {
   display: inline-flex;
   align-items: center;
   height: 24px;
   padding: 0 8px;
   border-radius: var(--r-xs);
-  background: var(--fill);
+  background: var(--tone-3-tint);
   font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: var(--w-medium);
-  color: var(--muted);
+  font-weight: var(--w-semibold);
+  color: var(--tone-3-ink);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
 }
@@ -534,9 +534,29 @@ p {
   background: var(--fill);
 }
 
-.sidebar-tools .btn-icon:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--fill-hover);
+/* 两个圆钮各按语义取色：退出=红（结束会话，属于破坏性操作）、主题=蓝（纯交互）。
+   底色直接用同色淡底，按钮在深色侧栏里不再是两个灰点 */
+#btn-logout {
+  color: var(--danger);
+  background: var(--danger-tint);
+}
+
+#btn-logout:hover:not(:disabled) {
+  color: var(--danger);
+  /* --danger-line 与 tint 同色相、透明度更高（0.26 vs 0.08），正好当 hover 洗色 */
+  background: var(--danger-line);
+}
+
+#btn-theme {
+  /* 用 --accent-ink 而不是 --accent：后者压在 8% 蓝底上只有 4.1:1，
+     与旁边那颗红色退出按钮的权重也对不上 */
+  color: var(--accent-ink);
+  background: var(--accent-tint);
+}
+
+#btn-theme:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent-line);
 }
 
 .sidebar-tools .btn-icon .icon {
@@ -982,6 +1002,18 @@ p {
 .icon-btn:hover:not(:disabled) {
   color: var(--ink);
   background: var(--fill);
+}
+
+/* 表格行内的动作按钮比其它地方的图标按钮大一号：这一列是每行唯一的操作入口，
+   17px 在 48px 行高里偏小，鼠标要「瞄准」。36px 仍在 44px 触控线以内不越界 */
+.cell-actions .icon-btn {
+  width: 36px;
+  height: 36px;
+}
+
+.cell-actions .icon {
+  width: 20px;
+  height: 20px;
 }
 
 .icon-btn:active:not(:disabled) {
