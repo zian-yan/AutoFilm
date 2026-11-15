@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     io::{self, Read, Write},
     net::TcpStream,
+    time::{Duration, Instant},
 };
 
 use serde_json::Value;
@@ -10,6 +11,11 @@ use serde_json::Value;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// 请求体最大长度，配置 JSON 远小于该值。
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// 整个请求（头部 + 主体）的读取总时限。
+///
+/// 单次 `read` 的超时挡不住慢速攻击：对端每 9 秒发 1 字节，就能把 16 KB 头部
+/// 拖上几十小时并长期占住连接名额。这里给整次读取一个硬预算，到点直接断开。
+const REQUEST_DEADLINE: Duration = Duration::from_secs(20);
 
 /// 一个已解析完成的 HTTP 请求。
 ///
@@ -113,6 +119,7 @@ impl Response {
 ///
 /// 返回 `Ok(None)` 表示对端直接关闭或请求明显不合法，调用方静默断开即可。
 pub fn read_request(stream: &mut TcpStream, remote_addr: &str) -> io::Result<Option<Request>> {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
 
@@ -121,6 +128,9 @@ pub fn read_request(stream: &mut TcpStream, remote_addr: &str) -> io::Result<Opt
             break position;
         }
         if buffer.len() > MAX_HEADER_BYTES {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
             return Ok(None);
         }
 
@@ -166,6 +176,9 @@ pub fn read_request(stream: &mut TcpStream, remote_addr: &str) -> io::Result<Opt
 
     let mut body = buffer[header_end + 4..].to_vec();
     while body.len() < content_length {
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
         let read = stream.read(&mut chunk)?;
         if read == 0 {
             break;

@@ -72,6 +72,12 @@ impl ValidationIssue {
     }
 }
 
+/// 导出 / 回传配置时替换敏感字段的占位符。
+///
+/// 面板拿到的是这个占位符，原样提交回来时由 [`Config::unmask`] 换回真实值：
+/// 既能让「复制备份」与接口响应不含明文密钥，又不会把用户没碰过的密码冲掉。
+pub const SECRET_MASK: &str = "__autofilm_masked__";
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     // Rust 版统一使用 snake_case 根字段；旧 Python 平铺配置不再兼容。
@@ -99,6 +105,48 @@ pub struct Config {
 }
 
 impl Config {
+    /// 返回脱敏副本：AList 密码 / OTP / 令牌与媒体服务器 API Key 全部替换为
+    /// [`SECRET_MASK`]，用于面板回传与「复制备份」导出。
+    pub fn masked(&self) -> Self {
+        let mut masked = self.clone();
+        for item in &mut masked.alist {
+            mask_optional(&mut item.password);
+            mask_optional(&mut item.otp_code);
+            mask_optional(&mut item.token);
+        }
+        for server in &mut masked.media_servers {
+            if !server.api_key.is_empty() {
+                server.api_key = SECRET_MASK.to_string();
+            }
+        }
+        masked
+    }
+
+    /// 把提交里仍是占位符的敏感字段还原成当前生效值。
+    ///
+    /// 按 `id` 匹配（而不是下标），这样在面板里插删条目也不会把密码串到别的
+    /// AList 上；找不到同 id 的历史配置时保持原样，交给校验阶段报错。
+    pub fn unmask(&mut self, current: &Self) {
+        for item in &mut self.alist {
+            let Some(old) = current.alist.iter().find(|old| old.id == item.id) else {
+                continue;
+            };
+            restore_optional(&mut item.password, &old.password);
+            restore_optional(&mut item.otp_code, &old.otp_code);
+            restore_optional(&mut item.token, &old.token);
+        }
+        for server in &mut self.media_servers {
+            if server.api_key == SECRET_MASK
+                && let Some(old) = current
+                    .media_servers
+                    .iter()
+                    .find(|old| old.id == server.id)
+            {
+                server.api_key = old.api_key.clone();
+            }
+        }
+    }
+
     /// 读取业务配置。
     ///
     /// 文件缺失不算错误：会按空配置启动，并尽力补一份仅含注释的骨架文件。
@@ -287,6 +335,21 @@ pub(crate) fn write_skeleton(path: &Path, contents: &str) -> std::io::Result<()>
 /// 返回配置文件的备份路径。
 pub fn backup_path(path: &Path) -> PathBuf {
     sibling_path(path, ".bak")
+}
+
+/// 非空的敏感字段替换为占位符；空值与 `None` 原样保留（表示本来就没配置）。
+fn mask_optional(value: &mut Option<String>) {
+    if value.as_deref().is_some_and(|text| !text.is_empty()) {
+        *value = Some(SECRET_MASK.to_string());
+    }
+}
+
+/// 提交值是占位符时还原为旧值；真实输入（包括空字符串，代表用户主动清空）
+/// 一律保持用户提交的内容。
+fn restore_optional(value: &mut Option<String>, old: &Option<String>) {
+    if value.as_deref() == Some(SECRET_MASK) {
+        *value = old.clone();
+    }
 }
 
 /// 返回写入配置时使用的临时文件路径。
@@ -705,6 +768,56 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = include_str!("../config/config.example.yaml");
+
+    #[test]
+    fn masked_hides_secrets_and_unmask_restores_them() {
+        let alist = alist::AlistConfig {
+            id: "main".to_string(),
+            base_url: "http://alist:5244".to_string(),
+            public_url: None,
+            username: Some("admin".to_string()),
+            password: Some("p@ss".to_string()),
+            otp_code: Some("123456".to_string()),
+            token: Some("tok".to_string()),
+            wait_time: 0.0,
+        };
+        let current = Config {
+            alist: vec![alist],
+            media_servers: vec![media_server::Config {
+                id: "emby".to_string(),
+                kind: media_server::Kind::Emby,
+                base_url: "http://emby:8096".to_string(),
+                api_key: "sk-live-abc".to_string(),
+                user_id: None,
+                timeout: 30,
+            }],
+            ..Config::default()
+        };
+
+        let masked = current.masked();
+        // 导出的副本里不能出现任何明文凭据。
+        let yaml = serde_yaml::to_string(&masked).expect("masked config should serialize");
+        for secret in ["p@ss", "123456", "sk-live-abc"] {
+            assert!(!yaml.contains(secret), "掩码后不应残留 {secret}:\n{yaml}");
+        }
+        assert!(yaml.contains(SECRET_MASK));
+
+        // 原样提交回来（用户没动敏感字段）时必须还原成真实值。
+        let mut submitted = masked.clone();
+        submitted.unmask(&current);
+        assert_eq!(submitted.alist[0].password.as_deref(), Some("p@ss"));
+        assert_eq!(submitted.alist[0].token.as_deref(), Some("tok"));
+        assert_eq!(submitted.alist[0].otp_code.as_deref(), Some("123456"));
+        assert_eq!(submitted.media_servers[0].api_key, "sk-live-abc");
+
+        // 用户主动改写（包括清空）时以其提交内容为准。
+        let mut edited = masked.clone();
+        edited.alist[0].password = Some("new".to_string());
+        edited.alist[0].token = None;
+        edited.unmask(&current);
+        assert_eq!(edited.alist[0].password.as_deref(), Some("new"));
+        assert_eq!(edited.alist[0].token, None);
+    }
 
     fn parse_example() -> Config {
         Config::from_yaml(EXAMPLE).expect("example config should parse")

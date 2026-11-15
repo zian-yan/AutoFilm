@@ -1,4 +1,4 @@
-use std::{sync::mpsc as std_mpsc, time::Duration};
+use std::{net::IpAddr, sync::mpsc as std_mpsc, time::Duration};
 
 use alist::models::fs::FsListReq;
 use serde_json::{Value, json};
@@ -28,10 +28,12 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
     let page = |body: &'static str| {
         Response::html(body).with_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     };
+    // 每请求只读一次面板配置：后续认证判断直接复用，避免反复加锁与克隆。
+    let auth = ctx.auth();
 
     // 登录页与它的静态资源必须始终可达，否则未登录用户会被重定向到自己。
     if request.method == "GET" && is_login_asset(&request.path) {
-        if !ctx.auth().enabled() || is_authenticated(ctx, request) {
+        if !auth.enabled() || is_authenticated(ctx, request, &auth) {
             return Response::redirect("/");
         }
         return match request.path.as_str() {
@@ -55,9 +57,9 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         return Response::new(200, "image/x-icon", assets::FAVICON_ICO);
     }
 
-    let auth = ctx.auth();
     if auth.enabled() {
-        if let Some(remaining) = ctx.guard.locked_remaining(&request.remote_addr) {
+        let client = client_key(request);
+        if let Some(remaining) = ctx.guard.locked_remaining(&client) {
             let message = format!("认证失败次数过多，请在 {remaining} 秒后重试");
             return if request.path.starts_with("/api/") {
                 Response::json(429, &json!({ "message": message }))
@@ -66,10 +68,10 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
             };
         }
 
-        if !is_authenticated(ctx, request) {
+        if !is_authenticated(ctx, request, &auth) {
             // 带了 Authorization 才算一次主动尝试，否则每次刷新页面都会累积失败次数。
             if request.header("authorization").is_some() {
-                ctx.guard.register_failure(&request.remote_addr);
+                ctx.guard.register_failure(&client);
             }
             return if request.path.starts_with("/api/") {
                 // 不带 WWW-Authenticate，避免浏览器弹出原生登录框盖住页面登录。
@@ -79,7 +81,7 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
             };
         }
 
-        ctx.guard.reset(&request.remote_addr);
+        ctx.guard.reset(&client);
     }
 
     // 变更类请求必须携带自定义请求头：浏览器跨站表单无法伪造该头，
@@ -126,7 +128,7 @@ fn is_login_asset(path: &str) -> bool {
 }
 
 /// 判断请求是否已通过认证：先看会话 Cookie，再兼容 HTTP Basic。
-fn is_authenticated(ctx: &AdminContext, request: &Request) -> bool {
+fn is_authenticated(ctx: &AdminContext, request: &Request, auth: &auth::AuthConfig) -> bool {
     if let Some(token) = auth::session_from_cookie(request.header("cookie"))
         && ctx.sessions.verify(token)
     {
@@ -134,21 +136,70 @@ fn is_authenticated(ctx: &AdminContext, request: &Request) -> bool {
     }
 
     // 保留 Basic：curl 或自动化脚本仍可直接带凭据访问，不必先走登录页。
-    ctx.auth().verify(request.header("authorization"))
+    auth.verify(request.header("authorization"))
 }
 
-/// 构造会话 Cookie：HttpOnly 防止脚本读取，SameSite=Strict 阻断跨站携带。
-fn session_cookie(token: &str, max_age: u64) -> String {
+/// 判断当前请求是否经由 HTTPS。
+///
+/// 面板本身不终结 TLS，实际部署多是 Nginx / Caddy 反代并透传
+/// `X-Forwarded-Proto`。据此给会话 Cookie 打 `Secure`，避免明文回传。
+fn is_https(request: &Request) -> bool {
+    request
+        .header("x-forwarded-proto")
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+}
+
+/// 限流与锁定使用的来源标识。
+///
+/// 面板常被放在反代后面，此时所有请求的对端地址都是反代本身：按 `remote_addr`
+/// 计数会让任意一个攻击者把所有人一起锁死，限流也失去意义。只有在「对端是本机
+/// 或内网」时才采信 `X-Forwarded-For` 的第一跳——直连公网的客户端可以随意伪造
+/// 该请求头，采信它等于关闭限流。
+fn client_key(request: &Request) -> String {
+    let peer = request.remote_addr.as_str();
+    if !peer.parse::<IpAddr>().is_ok_and(is_internal_ip) {
+        return peer.to_string();
+    }
+
+    request
+        .header("x-forwarded-for")
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| value.len() <= 64 && value.parse::<IpAddr>().is_ok())
+        .unwrap_or(peer)
+        .to_string()
+}
+
+/// 是否属于内网 / 回环地址（可能是本机反代）。
+fn is_internal_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        // 双栈监听时对端常是 `::ffff:192.168.x.x`，需要先还原成 IPv4 再判断。
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || v6.to_ipv4_mapped()
+                    .is_some_and(|v4| is_internal_ip(IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// 构造会话 Cookie：HttpOnly 防止脚本读取，SameSite=Strict 阻断跨站携带，
+/// HTTPS 场景再补 Secure 防止降级泄漏。
+fn session_cookie(token: &str, max_age: u64, secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
     format!(
-        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}",
+        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}",
         auth::SESSION_COOKIE
     )
 }
 
 /// 清除会话 Cookie。
-fn cleared_cookie() -> String {
+fn cleared_cookie(secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
     format!(
-        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+        "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}",
         auth::SESSION_COOKIE
     )
 }
@@ -164,7 +215,7 @@ fn login_handler(ctx: &AdminContext, request: &Request) -> Response {
         return Response::text(403, "缺少 X-AutoFilm-Request 请求头，请通过登录页操作");
     }
 
-    if let Some(remaining) = ctx.guard.locked_remaining(&request.remote_addr) {
+    if let Some(remaining) = ctx.guard.locked_remaining(&client_key(request)) {
         return Response::json(
             429,
             &json!({ "message": format!("失败次数过多，请在 {remaining} 秒后重试") }),
@@ -185,21 +236,22 @@ fn login_handler(ctx: &AdminContext, request: &Request) -> Response {
         .and_then(Value::as_str)
         .unwrap_or_default();
 
+    let client = client_key(request);
     if !auth.verify_credentials(username, password) {
-        ctx.guard.register_failure(&request.remote_addr);
-        info!(peer = %request.remote_addr, username = %username, "面板登录失败");
+        ctx.guard.register_failure(&client);
+        info!(peer = %request.remote_addr, client = %client, username = %username, "面板登录失败");
         return Response::json(401, &json!({ "message": "用户名或密码错误" }));
     }
 
-    ctx.guard.reset(&request.remote_addr);
+    ctx.guard.reset(&client);
     let Some(token) = ctx.sessions.issue() else {
         return Response::json(500, &json!({ "message": "签发会话失败，请重试" }));
     };
-    info!(peer = %request.remote_addr, username = %username, "面板登录成功");
+    info!(peer = %request.remote_addr, client = %client, username = %username, "面板登录成功");
 
     Response::json(200, &json!({ "ok": true })).with_header(
         "Set-Cookie",
-        session_cookie(&token, auth::SESSION_TTL.as_secs()),
+        session_cookie(&token, auth::SESSION_TTL.as_secs(), is_https(request)),
     )
 }
 
@@ -209,7 +261,8 @@ fn logout_handler(ctx: &AdminContext, request: &Request) -> Response {
         ctx.sessions.revoke(token);
     }
     info!(peer = %request.remote_addr, "面板退出登录");
-    Response::json(200, &json!({ "ok": true })).with_header("Set-Cookie", cleared_cookie())
+    Response::json(200, &json!({ "ok": true }))
+        .with_header("Set-Cookie", cleared_cookie(is_https(request)))
 }
 
 /// 返回面板初始化所需的全部数据：应用信息、两份配置、版本号、运行时状态与表单结构。
@@ -220,7 +273,7 @@ fn state_handler(ctx: &AdminContext) -> Response {
     let business = ctx.store.snapshot();
     let web = ctx.web_store.snapshot();
 
-    let config_value = match serde_json::to_value(&business.config) {
+    let config_value = match serde_json::to_value(business.config.masked()) {
         Ok(value) => value,
         Err(err) => return Response::text(500, format!("序列化业务配置失败: {err}")),
     };
@@ -564,12 +617,63 @@ mod tests {
             Some("/媒体库".to_string())
         );
     }
+
+    fn request(remote: &str, headers: &[(&str, &str)]) -> Request {
+        Request {
+            method: "GET".to_string(),
+            path: "/api/state".to_string(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body: Vec::new(),
+            remote_addr: remote.to_string(),
+        }
+    }
+
+    #[test]
+    fn client_key_only_trusts_forwarded_for_behind_internal_proxy() {
+        // 内网反代：采信第一跳，避免所有请求挤在同一个 key 上互相锁死。
+        let behind_proxy = request("172.18.0.2", &[("x-forwarded-for", "203.0.113.9, 10.0.0.1")]);
+        assert_eq!(client_key(&behind_proxy), "203.0.113.9");
+
+        // 直连公网：请求头可以随意伪造，必须忽略。
+        let direct = request("203.0.113.50", &[("x-forwarded-for", "1.2.3.4")]);
+        assert_eq!(client_key(&direct), "203.0.113.50");
+
+        // 非法值不会进入限流表，回退到真实对端地址。
+        let garbage = request("127.0.0.1", &[("x-forwarded-for", "not-an-ip")]);
+        assert_eq!(client_key(&garbage), "127.0.0.1");
+    }
+
+    #[test]
+    fn session_cookie_is_secure_only_over_https() {
+        assert!(session_cookie("token", 60, true).contains("; Secure"));
+        assert!(!session_cookie("token", 60, false).contains("Secure"));
+        assert!(cleared_cookie(true).contains("Max-Age=0; Secure"));
+
+        let https = request("127.0.0.1", &[("x-forwarded-proto", "https")]);
+        assert!(is_https(&https));
+        let http = request("127.0.0.1", &[("x-forwarded-proto", "http")]);
+        assert!(!is_https(&http));
+        assert!(!is_https(&request("127.0.0.1", &[])));
+    }
 }
 
 /// 返回当前业务配置的 YAML 文本，便于复制备份。
+///
+/// 敏感字段已脱敏：这份文本常被贴到 issue 或聊天里，不应带出明文密钥。
 fn config_yaml_handler(ctx: &AdminContext) -> Response {
-    match serde_yaml::to_string(&ctx.store.snapshot().config) {
-        Ok(yaml) => Response::new(200, "text/yaml; charset=utf-8", yaml),
+    match serde_yaml::to_string(&ctx.store.snapshot().config.masked()) {
+        Ok(yaml) => {
+            // 明确告知脱敏：避免用户把它直接覆盖回 config.yaml 后发现登录失败。
+            let mut text = String::from(
+                "# 敏感字段已在导出时替换为占位符（密码 / 令牌 / API Key），\n\
+                 # 本文件不能直接用于启动；需要完整配置请直接查看磁盘上的 config.yaml。\n\n",
+            );
+            text.push_str(&yaml);
+            Response::new(200, "text/yaml; charset=utf-8", text)
+        }
         Err(err) => Response::text(500, format!("序列化业务配置失败: {err}")),
     }
 }
@@ -589,8 +693,8 @@ fn save_config_handler(ctx: &AdminContext, request: &Request) -> Response {
         Err(message) => return Response::text(400, message),
     };
 
-    let current_version = ctx.store.version();
-    if let Some(response) = conflict("业务配置", &body, current_version) {
+    let current = ctx.store.snapshot();
+    if let Some(response) = conflict("业务配置", &body, current.version) {
         return response;
     }
 
@@ -598,7 +702,7 @@ fn save_config_handler(ctx: &AdminContext, request: &Request) -> Response {
         return Response::text(400, "请求体缺少 config 字段");
     };
 
-    let config: Config = match serde_json::from_value(config_value) {
+    let mut config: Config = match serde_json::from_value(config_value) {
         Ok(config) => config,
         Err(err) => {
             return Response::json(
@@ -610,6 +714,9 @@ fn save_config_handler(ctx: &AdminContext, request: &Request) -> Response {
             );
         }
     };
+
+    // 前端拿到的是脱敏占位符，提交回来时换回真实密钥；用户真正改过的字段不受影响。
+    config.unmask(&current.config);
 
     submit(ctx, config, ReloadSource::Panel)
 }
