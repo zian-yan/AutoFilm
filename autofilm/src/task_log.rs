@@ -76,7 +76,31 @@ pub fn task_key(module: &str, id: &str) -> String {
 pub struct TaskLogStore {
     root: PathBuf,
     tz: Tz,
-    buffers: Mutex<HashMap<String, VecDeque<String>>>,
+    buffers: Mutex<HashMap<String, Buffer>>,
+}
+
+/// 单个任务的内存缓冲。
+///
+/// `disk_lines` 单独记录磁盘文件当前的行数：只有它越过「上限的两倍」时才整理
+/// 一次文件。若按「每写一行就重写整个文件」处理，一个任务写到几千条日志后会
+/// 退化成 O(n²) 的磁盘写入。
+struct Buffer {
+    lines: VecDeque<String>,
+    disk_lines: usize,
+}
+
+impl Buffer {
+    fn empty() -> Self {
+        Self {
+            lines: VecDeque::new(),
+            disk_lines: 0,
+        }
+    }
+
+    fn from_lines(lines: VecDeque<String>) -> Self {
+        let disk_lines = lines.len();
+        Self { lines, disk_lines }
+    }
 }
 
 impl TaskLogStore {
@@ -102,10 +126,10 @@ impl TaskLogStore {
     }
 
     /// 从磁盘恢复；历史文件若曾超过上限，加载时立即裁到 1024 行。
-    fn load_from_disk(root: &Path, key: &str) -> VecDeque<String> {
+    fn load_from_disk(root: &Path, key: &str) -> Buffer {
         let path = Self::path_for(root, key);
         let Ok(content) = fs::read_to_string(&path) else {
-            return VecDeque::new();
+            return Buffer::empty();
         };
         let mut lines: VecDeque<String> = content.lines().map(str::to_string).collect();
         if lines.len() > MAX_LINES {
@@ -114,31 +138,37 @@ impl TaskLogStore {
             }
             let _ = write_lines(&path, &lines);
         }
-        lines
+        Buffer::from_lines(lines)
     }
 
-    /// 追加一行日志；达到上限时先删最早一行，再把当前 1024 行回写文件。
+    /// 追加一行日志。
+    ///
+    /// 内存始终只保留最近 [`MAX_LINES`] 行；磁盘按水位整理——追加到
+    /// [`MAX_LINES`] 的两倍才整体重写一次，把写盘量从「每条日志一个文件大小」
+    /// 摊薄到「每千条一次」。
     pub fn append(&self, key: &str, line: &str) {
         let clean = sanitize_line(line);
         let path = Self::path_for(&self.root, key);
         let mut buffers = self.buffers.lock().unwrap_or_else(|err| err.into_inner());
-        let lines = buffers
+        let buffer = buffers
             .entry(key.to_string())
             .or_insert_with(|| Self::load_from_disk(&self.root, key));
 
-        let trimmed = lines.len() >= MAX_LINES;
-        if trimmed {
-            lines.pop_front();
+        if buffer.lines.len() >= MAX_LINES {
+            buffer.lines.pop_front();
         }
-        lines.push_back(clean.clone());
+        buffer.lines.push_back(clean.clone());
 
         // 这里刻意不用 tracing 宏：写盘失败时若再发事件，会在 Layer 里递归。
-        if let Err(err) = append_line(&path, &clean) {
-            eprintln!("写入任务日志失败 ({}): {err}", path.display());
+        match append_line(&path, &clean) {
+            Ok(()) => buffer.disk_lines += 1,
+            Err(err) => eprintln!("写入任务日志失败 ({}): {err}", path.display()),
         }
-        if trimmed {
-            if let Err(err) = write_lines(&path, lines) {
-                eprintln!("回写任务日志失败 ({}): {err}", path.display());
+
+        if buffer.disk_lines > MAX_LINES * 2 {
+            match write_lines(&path, &buffer.lines) {
+                Ok(()) => buffer.disk_lines = buffer.lines.len(),
+                Err(err) => eprintln!("回写任务日志失败 ({}): {err}", path.display()),
             }
         }
     }
@@ -154,7 +184,7 @@ impl TaskLogStore {
             let buffers = self.buffers.lock().unwrap_or_else(|err| err.into_inner());
             buffers
                 .get(key)
-                .map(|lines| lines.iter().cloned().collect::<Vec<_>>())
+                .map(|buffer| buffer.lines.iter().cloned().collect::<Vec<_>>())
         };
         if let Some(lines) = cached {
             return lines;
@@ -163,11 +193,11 @@ impl TaskLogStore {
         if !Self::path_for(&self.root, key).is_file() {
             return Vec::new();
         }
-        let lines = Self::load_from_disk(&self.root, key);
-        let result: Vec<String> = lines.iter().cloned().collect();
+        let buffer = Self::load_from_disk(&self.root, key);
+        let result: Vec<String> = buffer.lines.iter().cloned().collect();
         if !result.is_empty() {
             let mut buffers = self.buffers.lock().unwrap_or_else(|err| err.into_inner());
-            buffers.entry(key.to_string()).or_insert(lines);
+            buffers.entry(key.to_string()).or_insert(buffer);
         }
         result
     }
@@ -428,10 +458,42 @@ mod tests {
             assert_eq!(*line, line_text(total - MAX_LINES + offset), "顺序必须连续");
         }
 
-        // 磁盘文件同样不超过上限，重启后不会长出多余的行。
+        // 磁盘按水位整理：允许留出最多两倍的余量，避免每条日志都全量重写。
         let path = TaskLogStore::path_for(&root, key);
         let disk_lines = fs::read_to_string(path).unwrap().lines().count();
-        assert_eq!(disk_lines, MAX_LINES);
+        assert!(
+            disk_lines <= MAX_LINES * 2,
+            "磁盘不应超过两倍水位，实际 {disk_lines} 行"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disk_file_is_compacted_once_over_high_watermark() {
+        let root = temp_root("compact");
+        let store = TaskLogStore::new(root.clone(), chrono_tz::UTC);
+        let key = "alist2strm:水位";
+        let total = MAX_LINES * 3 + 50;
+        for index in 0..total {
+            store.append(key, &line_text(index));
+        }
+
+        // 写盘量必须是「行数 / 1024」次整理，而不是每条日志重写一遍整个文件。
+        let path = TaskLogStore::path_for(&root, key);
+        let text = fs::read_to_string(&path).unwrap();
+        let disk_lines = text.lines().count();
+        assert!(
+            disk_lines < total,
+            "历史行不应全部留在磁盘上：{disk_lines} vs {total}"
+        );
+        assert!(disk_lines <= MAX_LINES * 2);
+
+        // 内存与磁盘都保留最新的内容，顺序连续。
+        let lines = store.read(key);
+        assert_eq!(lines.len(), MAX_LINES);
+        assert_eq!(lines[0], line_text(total - MAX_LINES));
+        assert_eq!(lines[MAX_LINES - 1], line_text(total - 1));
+        assert!(text.ends_with(&format!("{}\n", line_text(total - 1))));
         fs::remove_dir_all(root).unwrap();
     }
 
