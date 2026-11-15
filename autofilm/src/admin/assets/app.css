@@ -85,6 +85,23 @@
 
   /* 毛玻璃统一配方 */
   --blur: saturate(180%) blur(20px);
+
+  /* 运行日志固定使用终端配色，**不参与主题切换**。
+     日志是等宽长文本，需要长时间逐行扫读；浅色主题的「白底深字」在这种高密度
+     场景下反光刺眼、也更容易读丢行。所以这里定死一套深底浅字的令牌，深浅主题
+     下日志区都是同一块黑底——代价是浅色主题里会出现一块黑色区域，这是刻意为之。 */
+  --log-bg: #000000;
+  --log-rule: rgba(255, 255, 255, 0.14);
+  --log-ink: #e8e8ed;
+  --log-muted: #a0a0a8;
+  --log-hover: rgba(255, 255, 255, 0.07);
+  --log-scroll: rgba(255, 255, 255, 0.24);
+  /* 动作色在纯黑底上重新取值：主题里的 --ok / --danger 是按卡片底色算的，
+     搬到黑底上会发闷，这里各提亮一档 */
+  --log-ok: #4ade80;
+  --log-warn: #fbbf24;
+  --log-danger: #ff6f64;
+  --log-fetch: #ffb160;
 }
 
 /* ==================== 主题：浅色（Apple 官网灰白） ==================== */
@@ -124,9 +141,6 @@ html[data-theme="light"] {
   --danger: #d70015; /* iOS systemRed 深色版 */
   --danger-tint: rgba(255, 59, 48, 0.08);
   --danger-line: rgba(255, 59, 48, 0.26);
-
-  /* 任务日志的操作色：生成复用 --ok，删除复用 --danger，下载/复制单独一档橙 */
-  --log-fetch: #c2410c;
 
   /* 控件填充底：Apple 表单用浅灰填充而非描边 */
   --field-bg: #f2f2f4;
@@ -185,9 +199,6 @@ html[data-theme="dark"] {
   --danger: #ff453a;
   --danger-tint: rgba(255, 69, 58, 0.14);
   --danger-line: rgba(255, 69, 58, 0.34);
-
-  /* 深色主题下提高明度，保证 11px 小字在纯黑底上仍然清晰 */
-  --log-fetch: #ffb160;
 
   --field-bg: #2c2c2e;
   --field-bg-hover: #363638;
@@ -1484,15 +1495,25 @@ p {
   background: var(--surface);
 }
 
-/* ==================== 运行日志 ==================== */
+/* ==================== 运行日志（固定深色终端） ==================== */
 
 .log-status {
   margin-left: auto;
 }
 
+/* 无论深浅主题，日志区一律黑底浅字。上下各留一条极淡的白线，用于在深色主题
+   的 #1c1c1e 弹窗里把这块纯黑与标题栏、按钮栏分开。 */
 .log-body {
   padding: 0;
-  background: var(--surface-sunken);
+  background: var(--log-bg);
+  color: var(--log-ink);
+  border-top: 1px solid var(--log-rule);
+  border-bottom: 1px solid var(--log-rule);
+  scrollbar-color: var(--log-scroll) transparent;
+}
+
+.log-body::-webkit-scrollbar-thumb {
+  background-color: var(--log-scroll);
 }
 
 .log-lines {
@@ -1507,17 +1528,18 @@ p {
 .log-line {
   padding: 1px 6px;
   border-radius: var(--r-xs);
-  color: var(--body);
+  color: var(--log-ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+/* 悬停用白色叠加而非主题的 --fill：在纯黑底上 rgba(0,0,0,.04) 完全看不见 */
 .log-line:hover {
-  background: var(--fill);
+  background: var(--log-hover);
 }
 
 /* 时间戳与级别标记继承所在行的颜色再降透明度：整行同色，但重复的时间戳不会
-   和正文抢注意力（级别标记仍用语义色覆盖）。 */
+   和正文抢注意力（级别标记仍用语义色覆盖）。0.55 在纯黑上是 5.3:1，11px 仍达 AA。 */
 .log-time,
 .log-tag {
   opacity: 0.55;
@@ -1528,19 +1550,19 @@ p {
 }
 
 .log-tag-warn {
-  color: var(--warn);
+  color: var(--log-warn);
   opacity: 1;
 }
 
 .log-tag-error {
-  color: var(--danger);
+  color: var(--log-danger);
   opacity: 1;
 }
 
 /* 动作行整行染色：生成=绿、下载/复制=橙、删除=红，深浅主题与全部任务一致。
    关键词再加粗，保证一眼能定位动作本身。 */
 .log-line.log-op-make {
-  color: var(--ok);
+  color: var(--log-ok);
 }
 
 .log-line.log-op-fetch {
@@ -1548,11 +1570,20 @@ p {
 }
 
 .log-line.log-op-delete {
-  color: var(--danger);
+  color: var(--log-danger);
 }
 
 .log-op {
   font-weight: var(--w-semibold);
+}
+
+/* 空状态与错误直接写在日志区里，必须跟着换成浅字，否则黑底黑字 */
+.log-body .modal-hint {
+  color: var(--log-muted);
+}
+
+.log-body .modal-error {
+  color: var(--log-danger);
 }
 
 /* ==================== Toast（iOS 通知样式） ==================== */
