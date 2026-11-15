@@ -137,10 +137,7 @@ impl Config {
         }
         for server in &mut self.media_servers {
             if server.api_key == SECRET_MASK
-                && let Some(old) = current
-                    .media_servers
-                    .iter()
-                    .find(|old| old.id == server.id)
+                && let Some(old) = current.media_servers.iter().find(|old| old.id == server.id)
             {
                 server.api_key = old.api_key.clone();
             }

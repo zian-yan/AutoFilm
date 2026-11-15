@@ -179,7 +179,8 @@ fn is_internal_ip(ip: IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || v6.to_ipv4_mapped()
+                || v6
+                    .to_ipv4_mapped()
                     .is_some_and(|v4| is_internal_ip(IpAddr::V4(v4)))
         }
     }
@@ -634,7 +635,10 @@ mod tests {
     #[test]
     fn client_key_only_trusts_forwarded_for_behind_internal_proxy() {
         // 内网反代：采信第一跳，避免所有请求挤在同一个 key 上互相锁死。
-        let behind_proxy = request("172.18.0.2", &[("x-forwarded-for", "203.0.113.9, 10.0.0.1")]);
+        let behind_proxy = request(
+            "172.18.0.2",
+            &[("x-forwarded-for", "203.0.113.9, 10.0.0.1")],
+        );
         assert_eq!(client_key(&behind_proxy), "203.0.113.9");
 
         // 直连公网：请求头可以随意伪造，必须忽略。
