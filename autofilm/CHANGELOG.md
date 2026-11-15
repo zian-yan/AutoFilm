@@ -9,14 +9,27 @@
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-15
+
 ### 🔧 变更
 
+- **[Admin]**: 面板下发的业务配置改为**脱敏副本**：AList 的 `password` / `otp_code` / `token` 与媒体服务器 `api_key` 统一替换为占位符 `__autofilm_masked__`；`/api/config.yaml`「复制备份」导出同样脱敏，并在文件头注明「不能直接用于启动」。占位符原样提交保存时按条目 `id` 还原真实值，用户真正改写或清空的字段以提交内容为准，因此改其它字段不会把密码冲掉。**这是可见的行为变化**：面板密码框点「显示」看到的是占位符，需要明文请直接查磁盘上的 `config.yaml`。
+- **[Alist2Strm]**: Windows 下落盘前先规范化远端文件名：`< > : " | ? *` 与控制字符替换为 `_`，结尾空格与点裁掉，`CON` / `NUL` / `COM1` / `LPT1` 等保留设备名加 `_` 前缀。此前这类文件名会让对应条目每轮都写盘失败而被跳过；Linux / Docker 行为完全不变（不做任何重命名）。
 - **[Repo]**: `mediawarp/` 由内嵌源码改为 **git submodule**，指向自有 fork [zian-yan/MediaWarp](https://github.com/zian-yan/MediaWarp)（当前锁在 `acbb22d` / tag `v1.2.3`，即此前的 vendored 版本）。主仓库不再跟踪其 81 个 Go 源文件，MediaWarp 的改动改为在子模块内提交并推送，主仓库只记录 gitlink。镜像构建路径不变（仍 `COPY mediawarp/` 编译），但**检出方式变了**：本地需 `git clone --recursive` 或 `git submodule update --init --recursive`；CI 中 `build-docker` 的 `actions/checkout` 已加 `submodules: recursive`，CI 触发路径补上 `mediawarp`（submodule 指针更新在 diff 中表现为单个路径）与 `.gitmodules`。父仓库 `.gitignore` 不再列出 `mediawarp/` 下的本地文件，改由子模块自身的 `.gitignore` 负责。
 
 ### ⚡ 优化
 
+- **[TaskLog]**: 任务日志满 1024 行后，原来每写一行都要 `File::create` 重写整个文件，且全程持有全局锁做同步 IO。改为按水位整理：追加到 2048 行才整体重写一次，写盘量降低约三个数量级，大库同步的后段不再出现越长越慢的卡顿。
+- **[LibraryPoster]**: 海报渲染与 PNG 编码（高斯模糊、拼贴，属秒级纯 CPU 工作）从异步任务移到阻塞线程池，素材解码同样移出。低核数机器上生成海报期间，面板与其它定时任务不再一起卡住。
+- **[Alist2Strm]**: 文件系统调用批量化——同一目录每轮只真正创建一次（此前每个文件都 `create_dir_all` 一路 stat 到根）；「本地是否存在」与「伴生文件是否过期」合并为一次 `metadata`；清理阶段的空目录改在删除结束后自深向浅统一处理并按目录去重。
+- **[Admin]**: `GET /api/runtime` 计算「下次运行」时不再克隆整份业务配置，改为在只读锁内取任务列表。
 - **[Admin]**: 运行日志弹层字号由 `13px` 降到 `10px`（新增 `--t-log` 令牌，行高 `1.6`、内边距收紧），同一屏可多显示近三成日志行；时间戳与 `[WARN]`/`[ERROR]` 级别标记压成次要色，长路径仍保持正文色，密度提高但不再糊成一片。
 - **[Admin]**: 运行日志按操作类型着色：`生成`/`更新`/`写入` 为绿、`下载` 为橙、`删除` 为红（新增 `--log-fetch` 令牌，深浅主题各一档）。动作词加粗染色并给整行加同色左侧色条，滚动时无需逐行阅读即可分辨操作类型；同一动作在生成、追更、海报等所有任务里颜色一致。
+
+### 🐛 修复
+
+- **[Admin]**: 面板的 HTTP 读取补上整次请求的总时限（20 秒）。原有的 10 秒只是单次 `read` 超时，对端每 9 秒发 1 字节就能把 16 KB 请求头拖上几十小时并长期占用连接名额。
+- **[Admin]**: 反向代理部署下限流失效与 Cookie 明文两个问题：登录失败计数仅在「对端为回环 / 内网 / ULA」时才采信 `X-Forwarded-For` 第一跳（直连公网仍按真实对端地址，伪造该头无法绕过限流）。此前反代后所有请求共用一个地址，任意一个攻击者失败 8 次即可把所有人锁死 60 秒；会话 Cookie 在 `X-Forwarded-Proto: https` 时补 `Secure`，不再随明文请求回传。
 
 ## [3.0.1] - 2026-11-10
 
@@ -194,7 +207,8 @@
 
 <!-- 底部对比链接 -->
 
-[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zian-yan/AutoFilm/releases/tag/v3.0.0
 [2.2.1]: https://github.com/zian-yan/AutoFilm/compare/v2.2.0...v2.2.1
