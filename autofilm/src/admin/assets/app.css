@@ -1485,9 +1485,18 @@ p {
   color: var(--danger);
 }
 
-.modal-log,
 .modal-editor {
   width: min(880px, 100%);
+}
+
+/* 日志弹窗用固定尺寸而非「由内容撑开」：日志是持续追加的，尺寸随行数变化会让
+   窗口在轮询时反复跳动。高度取 84vh（上限 880px）——再高就顶到屏幕边缘、遮罩
+   失去呼吸感；宽度 1120px 是 1440 屏下的舒适上限，更宽等宽长行会拉得太长，
+   眼睛从行尾折回行首容易串行 */
+.modal-log {
+  width: min(1120px, 100%);
+  height: min(84vh, 880px);
+  max-height: min(84vh, 880px);
 }
 
 .editor-modal-body {
@@ -1577,7 +1586,18 @@ p {
   font-weight: var(--w-semibold);
 }
 
-/* 空状态与错误直接写在日志区里，必须跟着换成浅字，否则黑底黑字 */
+/* 空状态与错误直接写在日志区里，必须跟着换成浅字，否则黑底黑字。
+   尺寸固定后日志区通常有数百像素高，提示文字若还贴在顶部会显得"没加载完"，
+   因此撑满整块并在垂直方向居中。 */
+.log-body .modal-hint,
+.log-body .modal-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--s-5);
+}
+
 .log-body .modal-hint {
   color: var(--log-muted);
 }
@@ -1863,6 +1883,13 @@ p {
     width: 100%;
     border-radius: var(--r-xl) var(--r-xl) var(--r-lg) var(--r-lg);
     animation: sheet-in 300ms var(--ease);
+  }
+
+  /* 日志在手机上直接占满整个 sheet：窄屏一行只放得下 30 来个等宽字符，
+     高度不够就只能看到三四行，翻页比读日志还费劲 */
+  .modal-log {
+    height: 92dvh;
+    max-height: 92dvh;
   }
 
   @keyframes sheet-in {
