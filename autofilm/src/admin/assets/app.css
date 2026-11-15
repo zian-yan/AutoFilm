@@ -142,15 +142,32 @@ html[data-theme="light"] {
   --danger-tint: rgba(255, 59, 48, 0.08);
   --danger-line: rgba(255, 59, 48, 0.26);
 
+  /* 引用胶囊（存储 / 媒体服务器名）的 6 档色相：同一实体永远同一色，不同实体
+     一眼分开。每档都由「同色淡底 + 深一档的字」配成，白底上仍 ≥4.5:1 */
+  --tone-1-ink: #0066cc;
+  --tone-1-tint: rgba(0, 113, 227, 0.1);
+  --tone-2-ink: #4b3fd4;
+  --tone-2-tint: rgba(88, 86, 214, 0.1);
+  --tone-3-ink: #0b6f6a;
+  --tone-3-tint: rgba(20, 160, 150, 0.12);
+  --tone-4-ink: #1d7a44;
+  --tone-4-tint: rgba(29, 138, 78, 0.1);
+  --tone-5-ink: #9a5209;
+  --tone-5-tint: rgba(200, 120, 0, 0.12);
+  --tone-6-ink: #b0295f;
+  --tone-6-tint: rgba(210, 60, 130, 0.1);
+
   /* 控件填充底：Apple 表单用浅灰填充而非描边 */
   --field-bg: #f2f2f4;
   --field-bg-hover: #eaeaec;
   /* 聚焦时控件底色：浅色浮起到纯白，形成"被点亮"的层次 */
   --field-focus-bg: #ffffff;
-  /* 分栏选中项：在灰轨道上浮起为纯白 */
+  /* 分栏轨道：选中项自取强调色淡底，轨道只负责给出"槽"的边界 */
   --seg-track: rgba(0, 0, 0, 0.06);
-  --seg-active: #ffffff;
-  --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 1px 1px rgba(0, 0, 0, 0.04);
+  /* 选中项：12% 蓝底 + 深一档的蓝字。字色必须比 --accent-ink 再深一档，
+     否则压在这层蓝底上只有 4.28:1，不到 AA */
+  --seg-tint: rgba(0, 113, 227, 0.12);
+  --seg-ink: #0057b8;
   --fill: rgba(0, 0, 0, 0.04);
   --fill-hover: rgba(0, 0, 0, 0.07);
 
@@ -200,15 +217,28 @@ html[data-theme="dark"] {
   --danger-tint: rgba(255, 69, 58, 0.14);
   --danger-line: rgba(255, 69, 58, 0.34);
 
+  /* 深色底上整体提亮一档：纯黑 / #1c1c1e 上压 16% 同色底，再用浅字压回去 */
+  --tone-1-ink: #6cb4ff;
+  --tone-1-tint: rgba(10, 132, 255, 0.18);
+  --tone-2-ink: #b0adff;
+  --tone-2-tint: rgba(94, 92, 230, 0.2);
+  --tone-3-ink: #4fd6c9;
+  --tone-3-tint: rgba(20, 190, 175, 0.18);
+  --tone-4-ink: #5cd97f;
+  --tone-4-tint: rgba(48, 209, 88, 0.18);
+  --tone-5-ink: #f2ad55;
+  --tone-5-tint: rgba(255, 159, 10, 0.18);
+  --tone-6-ink: #ff92b6;
+  --tone-6-tint: rgba(255, 100, 150, 0.18);
+
   --field-bg: #2c2c2e;
   --field-bg-hover: #363638;
   /* 深色下不能浮到 #1c1c1e（与卡片同色会"消失"），保持填充色只加环 */
   --field-focus-bg: #2c2c2e;
-  /* 深色轨道用 #1c1c1e 而非半透明白：叠在纯黑页面上才看得出边界；
-     选中项再抬到 #48484a，才是 iOS 深色分段控件的"浮起"量级 */
+  /* 深色轨道用 #1c1c1e 而非半透明白：叠在纯黑页面上才看得出边界 */
   --seg-track: #1c1c1e;
-  --seg-active: #48484a;
-  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  --seg-tint: rgba(10, 132, 255, 0.26);
+  --seg-ink: #4ca9ff;
   --fill: rgba(255, 255, 255, 0.08);
   --fill-hover: rgba(255, 255, 255, 0.13);
 
@@ -616,11 +646,12 @@ p {
   color: var(--ink);
 }
 
+/* 选中项用强调色的淡底 + 深字：白/灰浮起在纯黑页面上只是「亮了一点」，
+   加色之后一眼能看出当前在哪一栏 */
 .segmented-item.is-active {
-  background: var(--seg-active);
-  color: var(--ink);
+  background: var(--seg-tint);
+  color: var(--seg-ink);
   font-weight: var(--w-semibold);
-  box-shadow: var(--seg-shadow);
 }
 
 .segmented-item:active:not(.is-active) {
@@ -883,7 +914,8 @@ p {
   gap: var(--s-1);
 }
 
-/* 引用标签：中性灰胶囊，不抢主按钮的视觉权重 */
+/* 引用标签：按实体名取 6 档色相（同一个存储 / 媒体服务器永远同色），比中性灰
+   更容易在多行表格里做视觉分组。色相只落在标签自身，不牵连行内其它信息 */
 .chip-ref {
   display: inline-flex;
   align-items: center;
@@ -892,8 +924,39 @@ p {
   border-radius: var(--r-pill);
   background: var(--surface-alt);
   font-size: var(--t-caption);
-  font-weight: var(--w-medium);
+  font-weight: var(--w-semibold);
   color: var(--body);
+  white-space: nowrap;
+}
+
+.chip-ref.tone-1 {
+  color: var(--tone-1-ink);
+  background: var(--tone-1-tint);
+}
+
+.chip-ref.tone-2 {
+  color: var(--tone-2-ink);
+  background: var(--tone-2-tint);
+}
+
+.chip-ref.tone-3 {
+  color: var(--tone-3-ink);
+  background: var(--tone-3-tint);
+}
+
+.chip-ref.tone-4 {
+  color: var(--tone-4-ink);
+  background: var(--tone-4-tint);
+}
+
+.chip-ref.tone-5 {
+  color: var(--tone-5-ink);
+  background: var(--tone-5-tint);
+}
+
+.chip-ref.tone-6 {
+  color: var(--tone-6-ink);
+  background: var(--tone-6-tint);
 }
 
 /* 行内图标按钮：圆形、无边框、hover 才浮现灰底 */
@@ -930,18 +993,36 @@ p {
   cursor: not-allowed;
 }
 
-/* 运行入口默认中性，仅 hover 时才用强调色：每行都有，不能让它稀释主按钮 */
+/* 行内四个动作各占一支颜色，扫一眼就能定位到要按的那个：
+   运行=绿（执行）、日志=蓝（查看）、编辑=橙（改动）、删除=红（危险）。
+   颜色常驻而不是只在 hover 出现——这一列每行重复，纯灰图标要逐个辨认。 */
+.icon-btn.is-play:not(:disabled):not(.is-running) {
+  color: var(--ok);
+}
+
 .icon-btn.is-play:hover:not(:disabled):not(.is-running) {
+  color: var(--ok);
+  background: var(--ok-tint);
+}
+
+.icon-btn.is-log:not(:disabled) {
+  color: var(--accent);
+}
+
+.icon-btn.is-log:hover:not(:disabled) {
   color: var(--accent);
   background: var(--accent-tint);
 }
 
-.icon-btn.is-edit:hover:not(:disabled),
-.icon-btn.is-log:hover:not(:disabled) {
-  color: var(--ink);
+.icon-btn.is-edit:not(:disabled) {
+  color: var(--warn);
 }
 
-/* 语义色：仅删除与危险操作 */
+.icon-btn.is-edit:hover:not(:disabled) {
+  color: var(--warn);
+  background: var(--warn-tint);
+}
+
 .icon-btn.is-delete {
   color: var(--danger);
 }

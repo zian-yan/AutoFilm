@@ -569,8 +569,16 @@ function updateChrome(active) {
   byId('section-subtitle').textContent = subtitle;
 }
 
+/* 引用胶囊的 6 档色相；与 CSS 里的 .chip-ref.tone-N 一一对应 */
+const REF_TONE_COUNT = 6;
+/** 实体名 → 色号。每次重绘清空，用来在「同屏不撞色」和「同名同色」之间取平衡。 */
+let refToneMap = new Map();
+
 function render() {
   if (!state.schema) return;
+  // 表格重建前清掉色号缓存：本轮只按「当前可见的实体」重新分配，避免上一页占用
+  // 的色号把这一页挤到偏色
+  refToneMap.clear();
   const content = byId('content');
   content.textContent = '';
 
@@ -1213,6 +1221,33 @@ function renderRow(section, item, index, columns) {
   return row;
 }
 
+function refToneHash(text) {
+  // FNV-1a：比 h*31 在少量中文短串上分布更均匀（h*31 会把「我的Alist」「OpenList」
+  // 一起丢进同一档，正好是最需要区分的两个）
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+/**
+ * 按实体名取色号：同一名称永远是同一色；若该色已被本轮另一个名称占用，顺延到
+ * 下一个空位——只有两三个存储时，哈希撞档会让相邻两行同色，正好失去区分作用。
+ */
+function refTone(text) {
+  const cached = refToneMap.get(text);
+  if (cached) return `tone-${cached}`;
+  const used = new Set(refToneMap.values());
+  let tone = (refToneHash(text) % REF_TONE_COUNT) + 1;
+  for (let step = 0; step < REF_TONE_COUNT && used.has(tone); step += 1) {
+    tone = (tone % REF_TONE_COUNT) + 1;
+  }
+  refToneMap.set(text, tone);
+  return `tone-${tone}`;
+}
+
 function cellContent(section, item, column) {
   if (column.kind === 'next_run') return nextRunCell(section, item);
 
@@ -1221,7 +1256,7 @@ function cellContent(section, item, column) {
     case 'ref': {
       const text = raw == null ? '' : String(raw);
       if (!text) return element('span', 'cell-dim', '—');
-      return element('span', 'chip-ref', text);
+      return element('span', `chip-ref ${refTone(text)}`, text);
     }
     case 'cron': {
       const text = raw == null ? '' : String(raw).trim();
