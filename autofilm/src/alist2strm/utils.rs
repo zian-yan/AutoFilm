@@ -28,27 +28,29 @@ pub(super) fn is_internal_file(path: &Path) -> bool {
 /// `remote_timestamps` 同时给出远端的创建与修改时间：任务会把本地文件时间
 /// 对齐到远端时间，若本地 mtime 恰好等于其中之一，说明这一份就是最新内容，
 /// 不能当成过期——否则每轮同步都会把伴生文件重下一遍。
-pub(super) async fn companion_file_is_stale(
-    local_path: &Path,
+///
+/// 直接接收调用方已经拿到的 `metadata`：同步流程本来就要 stat 一次判断文件
+/// 是否存在，这里再 stat 一遍纯属重复。
+pub(super) fn companion_file_is_stale(
+    metadata: &std::fs::Metadata,
     remote_size: u64,
     remote_timestamps: &[i64],
-) -> Result<bool> {
-    let metadata = fs::metadata(local_path).await?;
+) -> bool {
     if metadata.len() < remote_size {
-        return Ok(true);
+        return true;
     }
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
             let local_timestamp = duration.as_secs() as i64;
             if remote_timestamps.contains(&local_timestamp) {
-                return Ok(false);
+                return false;
             }
             // 与最“新”的远端时间比较：任何一个都更晚才算过期。
             let newest = remote_timestamps.iter().copied().max().unwrap_or(i64::MIN);
-            return Ok(local_timestamp < newest);
+            return local_timestamp < newest;
         }
     }
-    Ok(false)
+    false
 }
 
 /// 收集目标目录中的本地文件集合。
@@ -97,11 +99,22 @@ pub(super) async fn collect_local_files(
 /// 删除会在遇到非空目录、缺失目录或到达任务目标目录时停止。该函数用于移除
 /// 过期文件后清理遗留的空目录层级，不会删除 `target_dir` 本身，也不会越出
 /// `target_dir` 向上删除。
-pub(super) async fn remove_empty_parents(parent: Option<&Path>, target_dir: &Path) -> Result<()> {
+///
+/// `visited` 记录本轮已经处理过的目录：批量清理时成千上万个文件往往集中在
+/// 少数目录里，去重后可以避免对同一目录反复 `read_dir`。
+pub(super) async fn remove_empty_parents(
+    parent: Option<&Path>,
+    target_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<()> {
     let mut current = parent.map(Path::to_path_buf);
     while let Some(dir) = current {
         // 只在目标目录内部清理；越界（历史遗留的异常路径）直接停止。
         if dir == target_dir || !dir.starts_with(target_dir) {
+            break;
+        }
+        // 已经检查过（且没有删掉）的目录不必再看一次。
+        if !visited.insert(dir.clone()) {
             break;
         }
 

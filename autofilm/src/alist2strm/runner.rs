@@ -63,9 +63,34 @@ struct RunContext {
     retry_dirs: Arc<RetryDirs>,
     /// 本轮出现失败的远端目录（扫描失败 / 文件处理失败），任务结束时落盘。
     failed_dirs: Mutex<HashSet<String>>,
+    /// 本轮已经确认存在的本地目录。
+    ///
+    /// 同一目录下往往有几十上百个文件，逐个 `create_dir_all` 会一路 stat 到根；
+    /// 这里按目录去重，每个目录每轮只真正创建一次。
+    created_dirs: Mutex<HashSet<PathBuf>>,
 }
 
 impl RunContext {
+    /// 确保目标目录存在；同一目录在一轮任务里只真正创建一次。
+    async fn ensure_dir(&self, dir: &Path) -> Result<()> {
+        {
+            let created = self
+                .created_dirs
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if created.contains(dir) {
+                return Ok(());
+            }
+        }
+
+        fs::create_dir_all(dir).await?;
+        self.created_dirs
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(dir.to_path_buf());
+        Ok(())
+    }
+
     /// 记录一个本轮失败的远端目录，供下次任务强制重扫。
     fn note_failed_dir(&self, dir: &str) {
         let mut failed = self
@@ -387,6 +412,7 @@ impl Alist2Strm {
             stats,
             retry_dirs: retry,
             failed_dirs: Mutex::new(HashSet::new()),
+            created_dirs: Mutex::new(HashSet::new()),
         })
     }
 
@@ -601,14 +627,25 @@ impl Alist2Strm {
         let local_path = self.local_path(full_path, &object.name);
         processed_local_paths.insert(local_path.clone());
 
-        if !self.config.overwrite && fs::try_exists(&local_path).await? {
+        // 一次 metadata 同时回答「本地是否存在」和「伴生文件是否过期」，
+        // 避免每个文件多付一次 stat。
+        let existing = if self.config.overwrite {
+            None
+        } else {
+            match fs::metadata(&local_path).await {
+                Ok(metadata) => Some(metadata),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err.into()),
+            }
+        };
+
+        if let Some(metadata) = existing {
             if context.download_exts.contains(&suffix)
                 && companion_file_is_stale(
-                    &local_path,
+                    &metadata,
                     object.size.max(0) as u64,
                     &remote_timestamps(object),
                 )
-                .await?
             {
                 debug!(path = %full_path, local_path = %local_path.display(), "伴生文件已过期或大小不一致，重新处理");
                 return Ok(PathDecision::Process);
@@ -693,7 +730,7 @@ impl Alist2Strm {
             "已计算本地目标路径"
         );
         if let Some(parent) = local_path.parent() {
-            fs::create_dir_all(parent).await?;
+            context.ensure_dir(parent).await?;
         }
 
         let url = download_url(
@@ -902,6 +939,7 @@ impl Alist2Strm {
                 .await?;
         }
 
+        let mut deleted_parents: HashSet<PathBuf> = HashSet::new();
         for file_path in files_to_delete {
             match fs::try_exists(&file_path).await {
                 Ok(true) => {}
@@ -916,10 +954,8 @@ impl Alist2Strm {
                 Ok(()) => {
                     RunStats::inc(&context.stats.local_deleted_count);
                     info!("删除: {}", file_path.display());
-                    if let Err(err) =
-                        remove_empty_parents(file_path.parent(), &self.config.target_dir).await
-                    {
-                        warn!("清理空目录失败 {}（{err}）", file_path.display());
+                    if let Some(parent) = file_path.parent() {
+                        deleted_parents.insert(parent.to_path_buf());
                     }
                 }
                 Err(err) => {
@@ -927,6 +963,26 @@ impl Alist2Strm {
                 }
             }
         }
+
+        // 全部删完再统一清理空目录：按深度自深向浅处理，同一目录只扫一次。
+        let mut deleted_parents: Vec<PathBuf> = deleted_parents.into_iter().collect();
+        deleted_parents.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        let mut visited: HashSet<PathBuf> = HashSet::new();
+        for parent in deleted_parents {
+            if let Err(err) =
+                remove_empty_parents(Some(&parent), &self.config.target_dir, &mut visited).await
+            {
+                warn!("清理空目录失败 {}（{err}）", parent.display());
+            }
+        }
+
+        // 清理阶段可能删掉了整棵空目录，创建的缓存不再可信。
+        // 宁可让后续写入多一次 create_dir_all，也不要写进已消失的目录。
+        context
+            .created_dirs
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clear();
 
         Ok(())
     }
@@ -1223,6 +1279,7 @@ mod tests {
             stats: Arc::new(RunStats::new()),
             retry_dirs: Arc::new(RetryDirs::empty()),
             failed_dirs: Mutex::new(HashSet::new()),
+            created_dirs: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1482,24 +1539,22 @@ mod tests {
         set_local_time(&file, stamp).await.unwrap();
         let created = stamp.timestamp();
         let modified = created + 3600;
+        let metadata = fs::metadata(&file).await.unwrap();
 
         // 本地时间已被对齐到远端创建时间：不能再判成过期，否则每轮都会重下。
         assert!(
-            !companion_file_is_stale(&file, size, &[created, modified])
-                .await
-                .unwrap()
+            !companion_file_is_stale(&metadata, size, &[created, modified]),
+            "已对齐的文件不应判定为过期"
         );
         // 远端体积变大，依然要重下。
         assert!(
-            companion_file_is_stale(&file, size + 1024, &[created, modified])
-                .await
-                .unwrap()
+            companion_file_is_stale(&metadata, size + 1024, &[created, modified]),
+            "远端体积变大应重新下载"
         );
         // 远端更新（时间前移），本地时间对不上：过期。
         assert!(
-            companion_file_is_stale(&file, size, &[created + 7200, modified + 7200])
-                .await
-                .unwrap()
+            companion_file_is_stale(&metadata, size, &[created + 7200, modified + 7200]),
+            "远端时间前移应重新下载"
         );
 
         fs::remove_dir_all(&root).await.ok();
