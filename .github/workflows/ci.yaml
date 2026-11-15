@@ -1,21 +1,13 @@
 name: Continuous Integration
 
+# 只在发布新版本（推 `v*.*.*` tag）时跑，日常推送到分支不再触发。
+# 5 个平台的完整单测 + lint 成本不低，而真正需要这道闸门的是「要发出去的包」；
+# 日常改动本地跑 `cargo +nightly fmt --check` 与 `cargo test --locked --lib` 即可。
+# 临时需要全平台验证时，在 Actions 页面手动 Run workflow。
 on:
   push:
-    paths:
-      - "autofilm/**/*.rs"
-      - "autofilm/Cargo.toml"
-      - "autofilm/Cargo.lock"
-      - "autofilm/rust-toolchain.toml"
-      - "autofilm/rustfmt.toml"
-      - "mediawarp/**/*.go"
-      - "mediawarp/go.mod"
-      - "mediawarp/go.sum"
-      # mediawarp/ 改为 submodule 后，指针更新在 diff 里表现为单个路径 `mediawarp`
-      - "mediawarp"
-      - ".gitmodules"
-      - ".github/workflows/**"
-  pull_request:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
 permissions:
