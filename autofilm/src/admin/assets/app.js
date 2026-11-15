@@ -1677,6 +1677,61 @@ function openAlistBrowser(item, field, input) {
 
 let taskLogClose = null;
 
+/** 日志行格式与后端 `task_log.rs` 一致：`MM-DD HH:MM:SS [LEVEL] 消息`。 */
+const LOG_LINE_RE = /^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?:(\[(?:ERROR|WARN|DEBUG|TRACE)\])\s+)?([\s\S]*)$/;
+
+/**
+ * 动作词 → 颜色。同一动作在所有任务里必须是同一个颜色，因此只在这里维护一份
+ * 映射：生成类（写文件）绿、下载类（拉远端）橙、删除类（清理本地）红。
+ * `op` 给动作词上色，`row` 给整行加同色左侧色条。
+ */
+const LOG_OP_RULES = [
+  { row: 'log-row-delete', op: 'log-op-delete', pattern: /^删除/ },
+  { row: 'log-row-fetch', op: 'log-op-fetch', pattern: /^下载/ },
+  { row: 'log-row-make', op: 'log-op-make', pattern: /^(生成|更新|写入)/ },
+];
+
+/** 日志行距离底部多少像素内仍视为「贴底」，用于决定新行是否自动跟随滚动。 */
+const LOG_BOTTOM_TOLERANCE = 18;
+
+function logOpRule(message) {
+  return LOG_OP_RULES.find((rule) => rule.pattern.test(message)) || null;
+}
+
+/**
+ * 单行日志的富文本渲染：时间戳与级别标记压成次要色，动作词染色并给整行加同色
+ * 色条，其余（路径、统计数字）保持正文色。染色只覆盖动作词与紧随其后的冒号，
+ * 长路径不会被整行涂色，密集滚动时依然能靠行首颜色区分操作类型。
+ */
+function renderLogLine(line) {
+  const node = element('div', 'log-line');
+  const matched = LOG_LINE_RE.exec(line);
+  if (!matched) {
+    node.textContent = line;
+    return node;
+  }
+
+  const [, time, tag, message] = matched;
+  node.appendChild(element('span', 'log-time', `${time} `));
+  if (tag) {
+    const level = tag.slice(1, -1).toLowerCase();
+    node.appendChild(element('span', `log-tag log-tag-${level}`, `${tag} `));
+  }
+
+  const rule = logOpRule(message);
+  if (!rule) {
+    node.appendChild(document.createTextNode(message));
+    return node;
+  }
+
+  node.classList.add(rule.row);
+  const next = message.charAt(2);
+  const colon = next === ':' || next === '：' ? next : '';
+  node.appendChild(element('span', `log-op ${rule.op}`, `${message.slice(0, 2)}${colon}`));
+  node.appendChild(document.createTextNode(message.slice(2 + colon.length)));
+  return node;
+}
+
 function closeTaskLog() {
   if (!taskLogClose) return;
   const dispose = taskLogClose;
@@ -1730,7 +1785,7 @@ function openTaskLog(section, item) {
 
   function renderLines(lines) {
     // 用户往上翻看历史时不强行拽回底部。
-    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 27.6;
+    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - LOG_BOTTOM_TOLERANCE;
     body.textContent = '';
     if (!lines.length) {
       body.appendChild(
@@ -1740,7 +1795,7 @@ function openTaskLog(section, item) {
     }
     const list = element('div', 'log-lines');
     for (const line of lines) {
-      list.appendChild(element('div', 'log-line', line));
+      list.appendChild(renderLogLine(line));
     }
     body.appendChild(list);
     if (atBottom) body.scrollTop = body.scrollHeight;

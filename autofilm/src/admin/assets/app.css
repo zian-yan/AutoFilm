@@ -49,6 +49,9 @@
   --t-label: 14px;
   --t-table-head: 13px;
   --t-caption: 13px;
+  /* 运行日志是等宽高密度文本区，单行可能长达数百字符，因此脱离上面五级字号
+     单独定一档：10px 能在同一屏塞下更多行，且不与正文层级争夺注意力。 */
+  --t-log: 10px;
 
   --w-normal: 400;
   --w-medium: 500;
@@ -115,6 +118,11 @@ html[data-theme="light"] {
   --danger-tint: #fbecec;
   --danger-line: #eacac8;
 
+  /* 任务日志的操作色：生成复用 --ok，删除复用 --danger，下载单独定一档橙色，
+     避免和「警告」的土黄混淆。三色只用于日志行首的动作词。 */
+  --log-fetch: #b45309;
+  --log-time: #7c838c;
+
   --shadow-1: 0 1px 2px rgba(20, 23, 27, 0.04);
   --shadow-2: 0 18px 48px -20px rgba(20, 23, 27, 0.26);
   --scrim: rgba(20, 23, 27, 0.4);
@@ -155,6 +163,10 @@ html[data-theme="dark"] {
   --danger: #ec7d78;
   --danger-tint: rgba(236, 125, 120, 0.12);
   --danger-line: rgba(236, 125, 120, 0.36);
+
+  /* 深色主题下提高明度，保证 10px 小字在墨黑底上仍然清晰 */
+  --log-fetch: #eba55f;
+  --log-time: #838d99;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-2: 0 20px 52px -20px rgba(0, 0, 0, 0.7);
@@ -1330,21 +1342,72 @@ p {
 .log-lines {
   display: flex;
   flex-direction: column;
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-2) var(--s-3);
   font-family: var(--font-mono);
-  font-size: var(--t-caption);
-  line-height: 1.75;
+  font-size: var(--t-log);
+  line-height: 1.6;
 }
 
 .log-line {
-  padding: 1px 0;
+  padding: 1px 4px 1px 6px;
+  border-left: 2px solid transparent;
+  border-radius: var(--r-xs);
   color: var(--body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+/* 行首色条：动作行整行也带类型提示，滚动时不必逐行读文字；非动作行边框透明，
+   保证所有行的文字左边界对齐。 */
+.log-row-make {
+  border-left-color: var(--ok);
+}
+
+.log-row-fetch {
+  border-left-color: var(--log-fetch);
+}
+
+.log-row-delete {
+  border-left-color: var(--danger);
+}
+
 .log-line:hover {
   background: var(--surface-alt);
+}
+
+/* 时间戳与级别标记压成次要色，把注意力留给动作词 */
+.log-time,
+.log-tag {
+  color: var(--log-time);
+}
+
+.log-tag {
+  margin-right: 4px;
+}
+
+.log-tag-warn {
+  color: var(--warn);
+}
+
+.log-tag-error {
+  color: var(--danger);
+}
+
+/* 动作词：生成=绿、下载=橙、删除=红，颜色跨深浅主题保持同一语义 */
+.log-op {
+  font-weight: var(--w-semibold);
+}
+
+.log-op-make {
+  color: var(--ok);
+}
+
+.log-op-fetch {
+  color: var(--log-fetch);
+}
+
+.log-op-delete {
+  color: var(--danger);
 }
 
 /* ==================== Toast ==================== */

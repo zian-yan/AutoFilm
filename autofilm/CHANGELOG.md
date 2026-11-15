@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+### 🔧 变更
+
+- **[Repo]**: `mediawarp/` 由内嵌源码改为 **git submodule**，指向自有 fork [zian-yan/MediaWarp](https://github.com/zian-yan/MediaWarp)（当前锁在 `acbb22d` / tag `v1.2.3`，即此前的 vendored 版本）。主仓库不再跟踪其 81 个 Go 源文件，MediaWarp 的改动改为在子模块内提交并推送，主仓库只记录 gitlink。镜像构建路径不变（仍 `COPY mediawarp/` 编译），但**检出方式变了**：本地需 `git clone --recursive` 或 `git submodule update --init --recursive`；CI 中 `build-docker` 的 `actions/checkout` 已加 `submodules: recursive`，CI 触发路径补上 `mediawarp`（submodule 指针更新在 diff 中表现为单个路径）与 `.gitmodules`。父仓库 `.gitignore` 不再列出 `mediawarp/` 下的本地文件，改由子模块自身的 `.gitignore` 负责。
+
+### ⚡ 优化
+
+- **[Admin]**: 运行日志弹层字号由 `13px` 降到 `10px`（新增 `--t-log` 令牌，行高 `1.6`、内边距收紧），同一屏可多显示近三成日志行；时间戳与 `[WARN]`/`[ERROR]` 级别标记压成次要色，长路径仍保持正文色，密度提高但不再糊成一片。
+- **[Admin]**: 运行日志按操作类型着色：`生成`/`更新`/`写入` 为绿、`下载` 为橙、`删除` 为红（新增 `--log-fetch` 令牌，深浅主题各一档）。动作词加粗染色并给整行加同色左侧色条，滚动时无需逐行阅读即可分辨操作类型；同一动作在生成、追更、海报等所有任务里颜色一致。
+
 ## [3.0.1] - 2026-11-10
 
 ### ⚡ 优化
