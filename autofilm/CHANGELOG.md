@@ -7,6 +7,12 @@
 
 > 本仓库从 `v1.0.0` 起重置版本号，作为独立发布线的起点；此前上游（AkimioJR/AutoFilm）的历史版本请查阅 Git 提交记录与上游 Release。
 
+## [3.3.1] - 2026-11-17
+
+### ⚡ 优化
+
+- **[LibraryPoster]**: collage 风格的标题块改为**贴顶排布 + 动态避让海报墙**。原先整块文字以画布 `52%` 高度纵向居中，四字标题（如「日韩美剧」）的右端会压到斜向左下铺开的海报上；现在标题墨迹顶边固定在画面 `33%` 处、副标题向下生长，宽度不再写死 `34%`，而是扫描海报卡片的 alpha 不透明像素、取文字块所在纵向区间内最靠左的可见边缘反推可用宽度（1080p 下留出约 `46px` 间距），再据此定字号——上移腾出的左下角空白被重新利用，任何标题/分辨率下都不会与海报重叠。副标题也从「只画单行、放不下就无限缩字号」改为**优先折行（最多两行）**，仍放不下才缩字号，长英文副标题不会再被压成一串小字；字号、行高、折行结果统一由 `TitleLayout` 度量，缺标题/缺副标题时块高各自收敛。同时**删掉副标题左侧的色标小方块**（以及只服务于它的主题色→强调色推导）：它原本用于给副标题做视觉锚点，但在压暗背景上更像一块噪点，副标题现在与标题左对齐、直接以文字起行。
+
 ## [3.3.0] - 2026-11-17
 
 ### 🔧 变更
@@ -231,7 +237,8 @@
 
 <!-- 底部对比链接 -->
 
-[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.3.1...HEAD
+[3.3.1]: https://github.com/zian-yan/AutoFilm/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/zian-yan/AutoFilm/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/zian-yan/AutoFilm/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...v3.1.0
