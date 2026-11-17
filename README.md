@@ -71,7 +71,7 @@ docker build -f autofilm/docker/Dockerfile -t autofilm:local .
 
    见 [`autofilm/docker/compose.yaml`](autofilm/docker/compose.yaml)。
    镜像地址 `ghcr.io/zian-yan/autofilm:latest`，`latest` 跟随最新正式版，需要固定版本时改用
-   `ghcr.io/zian-yan/autofilm:3.2.0` 这类语义化标签。
+   `ghcr.io/zian-yan/autofilm:3.3.0` 这类语义化标签。
 
 2. **从源码构建**
 

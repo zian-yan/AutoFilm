@@ -7,7 +7,7 @@
 
 > 本仓库从 `v1.0.0` 起重置版本号，作为独立发布线的起点；此前上游（AkimioJR/AutoFilm）的历史版本请查阅 Git 提交记录与上游 Release。
 
-## [Unreleased]
+## [3.3.0] - 2026-11-17
 
 ### 🔧 变更
 
@@ -231,7 +231,8 @@
 
 <!-- 底部对比链接 -->
 
-[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/zian-yan/AutoFilm/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/zian-yan/AutoFilm/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/zian-yan/AutoFilm/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/zian-yan/AutoFilm/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/zian-yan/AutoFilm/compare/v3.0.0...v3.0.1
