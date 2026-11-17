@@ -11,6 +11,7 @@
 
 ### 🔧 变更
 
+- **[Docs]**: 仓库根目录补齐 `LICENSE`，与上游 [AkimioJR/AutoFilm](https://github.com/AkimioJR/AutoFilm) / [AkimioJR/MediaWarp](https://github.com/AkimioJR/MediaWarp) 的修改版 GNU AGPL-3.0 **逐字一致**（此前仅 `autofilm/LICENSE` 一份，根目录无许可证文件）。同时重建根目录 `README.md`：补回仓库结构、部署方式与 MediaWarp 集成说明，并新增「致谢」与「许可证」两节，明确感谢原作者 AkimioJR 并保留上游许可第 3 条要求的来源声明。
 - **[Repo]**: CI 改为**只在发布新版本时运行**：触发条件从「推送命中 `autofilm/**/*.rs` 等路径」改为只认 `v*.*.*` tag（另留 `workflow_dispatch` 供手动触发），并去掉 `pull_request` 触发。5 个平台的完整单测 + lint 在每次推送时都跑一遍成本过高，而真正需要这道闸门的是要发出去的包；日常改动仍可本地跑 `cargo +nightly fmt --check` 与 `cargo test --locked --lib` 覆盖同样的检查项。
 
 ### ⚡ 优化
