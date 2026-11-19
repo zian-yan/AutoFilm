@@ -187,6 +187,15 @@ impl Supervisor {
             .to_path_buf()
     }
 
+    /// MediaWarp 落盘日志的目录：`<子进程工作目录>/logs/mediawarp`。
+    ///
+    /// MediaWarp 的 `logs` 是相对路径，由它自己的工作目录解析（见 [`Self::process_cwd`]），
+    /// 面板读日志必须用同一个基准；若按主进程 cwd 解析，容器里会读到一份空目录，
+    /// 面板就会一直显示「暂无日志」。
+    pub fn log_dir(&self) -> PathBuf {
+        self.process_cwd().join("logs").join("mediawarp")
+    }
+
     fn set_status(&self, update: impl FnOnce(&mut Status)) {
         let mut status = self.status.lock().unwrap_or_else(|err| err.into_inner());
         update(&mut status);

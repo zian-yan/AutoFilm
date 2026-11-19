@@ -19,6 +19,13 @@ use crate::task_log::TaskLogLayer;
 /// 只会挤占正文宽度；不带毫秒则让同一秒内的批量输出保持对齐。
 const TIME_FORMAT: &str = "%m-%d %H:%M:%S";
 
+/// 日志子目录名：`<--log 目录>/autofilm/`。
+///
+/// MediaWarp 的日志落在 `<--log 目录>/mediawarp/`（见 `internal/config.LogDir`），
+/// 两个进程共用同一个日志挂载点，按来源分文件夹才不会把按天文件、任务日志与
+/// 代理的 access/service 日志混在一个目录里。
+pub const SUBDIR: &str = "autofilm";
+
 /// 自定义一个结构体，用来存放 chrono_tz 的时区
 #[derive(Debug, Clone)]
 struct ChronoTzTimer {
@@ -84,7 +91,8 @@ pub struct LoggingGuard {
 
 /// 初始化日志系统，支持控制台和文件输出。返回一个 `LoggingGuard` 以保持文件 appender 的生命周期。
 /// `level` 决定了日志的详细程度
-/// `log_path` 指定了日志文件的目录（为空表示禁用文件输出）
+/// `log_path` 指定了日志文件的根目录（为空表示禁用文件输出），按天文件实际写入
+/// `<log_path>/autofilm/`
 /// `tz` 指定使用时区
 pub fn init(
     level: Level,
@@ -115,7 +123,7 @@ pub fn init(
         return Ok(None);
     }
 
-    let log_path = std::path::absolute(log_path)?;
+    let log_path = std::path::absolute(log_path)?.join(SUBDIR);
     std::fs::create_dir_all(&log_path)?;
 
     let file_appender = DailyFileAppender::new(log_path.clone(), tz)?;

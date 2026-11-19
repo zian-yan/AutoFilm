@@ -1719,6 +1719,42 @@ p {
   color: var(--log-danger);
 }
 
+/* ==================== MediaWarp 日志工具栏 ==================== */
+
+/* 来源分栏 + 关键词过滤 + 命中统计。夹在标题栏与黑底日志区之间：这三件都是
+   「控制」而不是「内容」，留在浅色表面里，输入框不会被终端的等宽深色样式带跑。 */
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  padding: var(--s-3) var(--s-5);
+  background: var(--surface);
+}
+
+/* 弹层里的分栏比页面级小一号：工具栏只有一行，32px 的胶囊会把整行撑高 */
+.segmented-sm .segmented-item {
+  min-height: 28px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+/* 搜索框吃掉剩余宽度但有上限：太宽时输入区与「共 N 行」会隔得很远 */
+.log-search {
+  flex: 1 1 220px;
+  min-width: 120px;
+  max-width: 360px;
+  height: 32px;
+  font-size: 13px;
+}
+
+.log-count {
+  margin-left: auto;
+  font-size: var(--t-caption);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 /* ==================== Toast（iOS 通知样式） ==================== */
 
 .toasts {
@@ -1957,8 +1993,8 @@ p {
     min-width: 0;
   }
 
-  /* MediaWarp 有 4 个按钮：等分一行时每个只剩 74px，图标 + 5 个汉字会溢出按钮
-     外壳（文字顶出胶囊外沿），改成 2×2 两行，每个约 160px。
+  /* MediaWarp 有 5 个按钮：等分一行时每个只剩 74px，图标 + 5 个汉字会溢出按钮
+     外壳（文字顶出胶囊外沿），改成两列排布，每个约 160px（奇数个时最后一个占满）。
      间距同时收到 8px：基数是 `50% - 4px`，两列刚好 50%×2 + 8 填满整行，不会因为
      默认的 10px 间距多出 2px 而被挤成一行一个。 */
   .mw-actions {

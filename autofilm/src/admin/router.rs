@@ -124,6 +124,7 @@ pub fn dispatch(ctx: &AdminContext, request: &Request) -> Response {
         ("POST", "/api/logout") => logout_handler(ctx, request),
         ("POST", "/api/reload") => reload_handler(ctx),
         ("GET", "/api/mediawarp/preview") => mediawarp_preview_handler(ctx),
+        ("POST", "/api/mediawarp/log") => mediawarp_log_handler(ctx, request),
         ("POST", "/api/mediawarp/restart") => mediawarp_restart_handler(ctx),
         ("POST", "/api/mediawarp/import") => mediawarp_import_handler(ctx),
         (_, path) if path.starts_with("/api/") => {
@@ -940,6 +941,53 @@ fn mediawarp_preview_handler(ctx: &AdminContext) -> Response {
         ),
         Err(message) => Response::json(500, &json!({ "message": message })),
     }
+}
+
+/// 读取 MediaWarp 的落盘日志（面板 MediaWarp 页的「运行日志」弹窗）。
+///
+/// 请求体 `{"source": "service" | "access"}`，缺省为服务日志。日志不在内存里另存
+/// 一份，直接读 MediaWarp 自己按天写出的文件，所以面板看到的与 `tail -f` 一致。
+fn mediawarp_log_handler(ctx: &AdminContext, request: &Request) -> Response {
+    let body = match request.json_body() {
+        Ok(body) => body,
+        Err(message) => return Response::text(400, message),
+    };
+    let raw = body
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(source) = mediawarp::LogSource::parse(raw) else {
+        return Response::json(
+            400,
+            &json!({ "message": "source 只能是 service 或 access" }),
+        );
+    };
+
+    let config = ctx.store.snapshot().config.mediawarp;
+    // 关掉文件输出时 MediaWarp 根本不会创建日志文件，提前告诉面板，
+    // 否则用户只会看到「暂无日志」，误以为服务没在跑。
+    let file_enabled = match source {
+        mediawarp::LogSource::Service => config.log.service.file,
+        mediawarp::LogSource::Access => config.log.access.file,
+    };
+
+    let dir = ctx.mediawarp.log_dir();
+    let snapshot = mediawarp::logs::read(&dir, source);
+
+    Response::json(
+        200,
+        &json!({
+            "source": snapshot.source,
+            "dir": dir.display().to_string(),
+            "path": snapshot.path,
+            "day": snapshot.day,
+            "lines": snapshot.lines,
+            "truncated": snapshot.truncated,
+            "file_enabled": file_enabled,
+            "managed": config.enable,
+            "limit": mediawarp::logs::MAX_LINES,
+        }),
+    )
 }
 
 /// 面板「立即重启」：与配置保存共用热重载内核的串行命令通道，避免并发抢端口。

@@ -23,6 +23,8 @@ const POLL_INTERVAL = 3000;
 const TASK_LOG_POLL_INTERVAL = 500;
 /** 单次日志请求超时：避免请求挂住后在途标记永不释放。 */
 const TASK_LOG_TIMEOUT = 4000;
+/** MediaWarp 日志弹层的刷新频率：代理日志按请求增长，1 秒足够，再快只是白跑请求。 */
+const MEDIAWARP_LOG_POLL_INTERVAL = 1000;
 /** 目录浏览请求超时；后端 /api/browse 自身有 10s 上限，这里略放宽。 */
 const BROWSE_TIMEOUT = 12000;
 
@@ -121,6 +123,7 @@ const ICON_PATHS = {
   chevron: ['M9 6l6 6-6 6'],
   folder: ['M3.5 6.5h6.2l2 2.5h8.8v10h-17z'],
   'file-text': ['M7 3.5h7l4 4v13H7z', 'M14 3.5v4h4', 'M10 12h6', 'M10 15.5h6'],
+  terminal: ['M4 5.5h16v13H4z', 'M7.5 10l2.5 2-2.5 2', 'M12.5 14h4'],
   close: ['M6 6l12 12', 'M18 6 6 18'],
   logout: ['M14 4.5H5.5v15H14', 'M11.5 12h9', 'M17.5 8.5 21 12l-3.5 3.5'],
 };
@@ -452,6 +455,36 @@ async function requestTaskLog(module, id, externalSignal) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
       body: JSON.stringify({ module, id }),
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (redirectIfUnauthorized(response)) return { response, data: {} };
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  } finally {
+    window.clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/**
+ * 读取 MediaWarp 的落盘日志。`source` 为 `service` 或 `access`。
+ *
+ * 与任务日志一样带超时与外部 abort：弹窗关闭后立即掐断在途请求。
+ */
+async function requestMediaWarpLog(source, externalSignal) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), TASK_LOG_TIMEOUT);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  try {
+    const response = await fetch('/api/mediawarp/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-AutoFilm-Request': '1' },
+      body: JSON.stringify({ source }),
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -821,6 +854,9 @@ function renderMediaWarpSection(container, section, heading) {
   restart.id = 'mw-restart';
   actions.appendChild(restart);
   actions.appendChild(
+    button('btn btn-ghost btn-small', '运行日志', 'terminal', () => openMediaWarpLog()),
+  );
+  actions.appendChild(
     button('btn btn-ghost btn-small', '预览配置', 'file-text', () => previewMediaWarp()),
   );
   actions.appendChild(
@@ -926,6 +962,286 @@ function closeMediaWarpModal() {
   window.removeEventListener('keydown', mediawarpModal.onKeydown);
   mediawarpModal.mask.remove();
   mediawarpModal = null;
+}
+
+/* ---------------- MediaWarp 运行日志 ---------------- */
+
+let mediawarpLogClose = null;
+
+/**
+ * 服务 / 访问日志行：`【LEVEL】YYYY-MM-DD HH:MM:SS | 消息`。
+ *
+ * MediaWarp 落盘前已剥离终端颜色码，因此只需按固定的三段式切分；访问日志在时间
+ * 后面还会多出 `IP"路径" |`，一并留在消息体里原样展示。
+ */
+const MW_LOG_LINE_RE = /^【([A-Z]+)】\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s?([\s\S]*)$/;
+
+/** 需要一眼看见的级别才上色，INFO / DEBUG / TRACE 保持正文色。 */
+const MW_LOG_LEVEL_TONE = {
+  WARNING: 'warn',
+  WARN: 'warn',
+  ERROR: 'error',
+  ERRO: 'error',
+  FATAL: 'error',
+  PANIC: 'error',
+};
+
+const MEDIAWARP_LOG_SOURCES = [
+  { value: 'service', label: '服务日志', hint: '启动、配置与错误' },
+  { value: 'access', label: '访问日志', hint: '逐条请求记录，量较大' },
+];
+
+/** 关键词过滤：大小写不敏感的子串匹配；关键词为空（含只有空白）时返回全部。 */
+function filterLogLines(lines, keyword) {
+  const needle = String(keyword == null ? '' : keyword)
+    .trim()
+    .toLowerCase();
+  if (!needle) return lines;
+  return lines.filter((line) => line.toLowerCase().includes(needle));
+}
+
+function renderMediaWarpLogLine(line) {
+  const node = element('div', 'log-line');
+  const matched = MW_LOG_LINE_RE.exec(line);
+  if (!matched) {
+    node.textContent = line;
+    return node;
+  }
+
+  const [, level, time, message] = matched;
+  const tone = MW_LOG_LEVEL_TONE[level];
+  node.appendChild(element('span', 'log-time', `${time} `));
+  node.appendChild(element('span', `log-tag${tone ? ` log-tag-${tone}` : ''}`, `[${level}] `));
+  node.appendChild(document.createTextNode(message));
+  return node;
+}
+
+function closeMediaWarpLog() {
+  if (!mediawarpLogClose) return;
+  const dispose = mediawarpLogClose;
+  mediawarpLogClose = null;
+  dispose();
+}
+
+/**
+ * MediaWarp 运行日志弹层。
+ *
+ * 交互与任务日志弹层一致（固定尺寸、贴底自动跟随、Esc / 点遮罩关闭、定时轮询），
+ * 另加两件 MediaWarp 特有的事：
+ * - 服务日志 / 访问日志分栏切换，两者量级差得很远，混在一起看不了；
+ * - 关键词实时过滤，命中的行数会跟着刷新，清空输入即恢复全部。
+ *
+ * 日志本身来自 MediaWarp 自己按天写出的文件，面板只读不缓存，所以内容与
+ * `tail -f` 完全一致。
+ */
+function openMediaWarpLog() {
+  closeMediaWarpLog();
+  closeMediaWarpModal();
+
+  let disposed = false;
+  let inFlight = false;
+  let source = 'service';
+  let keyword = '';
+  let lines = [];
+  let meta = { path: '', dir: '', day: null, truncated: false, file_enabled: true, limit: 2000 };
+
+  const logAbort = new AbortController();
+
+  const mask = element('div', 'modal-mask');
+  const modal = element('div', 'modal modal-log');
+
+  const head = element('div', 'modal-head');
+  head.appendChild(element('span', 'modal-title', 'MediaWarp 运行日志'));
+  const pathLabel = element('span', 'modal-path mono', '');
+  head.appendChild(pathLabel);
+  head.appendChild(iconButton('', 'close', '关闭', () => closeMediaWarpLog()));
+  modal.appendChild(head);
+
+  // 工具栏放在日志正文之外：轮询重绘日志区时不会重建输入框，输入焦点和光标位置
+  // 都不会丢，也不受日志区深色等宽样式的影响。
+  const toolbar = element('div', 'log-toolbar');
+  const tabs = element('div', 'segmented segmented-sm');
+  tabs.setAttribute('role', 'group');
+  tabs.setAttribute('aria-label', '日志来源');
+
+  const switchSource = (value) => {
+    if (value === source) return;
+    source = value;
+    lines = [];
+    meta = { ...meta, path: '', day: null, truncated: false, file_enabled: true };
+    for (const tab of tabs.children) {
+      const active = tab.dataset.source === source;
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    renderLines();
+    refresh();
+  };
+
+  for (const item of MEDIAWARP_LOG_SOURCES) {
+    const tab = element(
+      'button',
+      `segmented-item${item.value === source ? ' is-active' : ''}`,
+      item.label,
+    );
+    tab.type = 'button';
+    tab.dataset.source = item.value;
+    tab.title = item.hint;
+    tab.setAttribute('aria-pressed', item.value === source ? 'true' : 'false');
+    tab.addEventListener('click', () => switchSource(item.value));
+    tabs.appendChild(tab);
+  }
+  toolbar.appendChild(tabs);
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'input log-search';
+  search.placeholder = '输入关键词实时过滤，留空显示全部';
+  search.setAttribute('aria-label', '日志关键词过滤');
+  search.addEventListener('input', () => {
+    keyword = search.value;
+    renderLines();
+  });
+  toolbar.appendChild(search);
+
+  const count = element('span', 'log-count', '加载中…');
+  toolbar.appendChild(count);
+  modal.appendChild(toolbar);
+
+  const body = element('div', 'modal-body log-body');
+  modal.appendChild(body);
+
+  const foot = element('div', 'modal-foot');
+  foot.appendChild(button('btn btn-ghost btn-small', '刷新', 'refresh', () => refresh()));
+  foot.appendChild(button('btn btn-primary btn-small', '关闭', null, () => closeMediaWarpLog()));
+  modal.appendChild(foot);
+
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+
+  const sourceLabel = () =>
+    (MEDIAWARP_LOG_SOURCES.find((item) => item.value === source) || {}).label || '该日志';
+
+  function describePath() {
+    // 没读到文件时退回到目录：至少让用户知道面板在哪个位置找日志。
+    const text = meta.path || meta.dir || '';
+    pathLabel.textContent = text;
+    pathLabel.title = text;
+  }
+
+  function updateCount(shown) {
+    if (!lines.length) {
+      count.textContent = meta.file_enabled ? '暂无日志' : '未开启文件输出';
+      return;
+    }
+    const parts = [];
+    const needle = keyword.trim();
+    parts.push(needle ? `匹配 ${shown} / ${lines.length} 行` : `共 ${lines.length} 行`);
+    if (meta.truncated) parts.push(`只保留最近 ${meta.limit} 行`);
+    count.textContent = parts.join(' · ');
+  }
+
+  function hint(text) {
+    return element('p', 'modal-hint', text);
+  }
+
+  function renderLines() {
+    // 用户往上翻看历史时不强行拽回底部。
+    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - LOG_BOTTOM_TOLERANCE;
+    const filtered = filterLogLines(lines, keyword);
+    body.textContent = '';
+
+    if (filtered.length) {
+      const list = element('div', 'log-lines');
+      for (const line of filtered) list.appendChild(renderMediaWarpLogLine(line));
+      body.appendChild(list);
+      if (atBottom) body.scrollTop = body.scrollHeight;
+    } else if (!meta.file_enabled) {
+      body.appendChild(
+        hint(
+          `${sourceLabel()}没有开启文件输出：请在「MediaWarp」页勾选对应的 file 选项并保存，服务重启后即可在这里查看。`,
+        ),
+      );
+    } else if (!lines.length) {
+      body.appendChild(
+        hint('暂无日志。代理服务产生输出后，这里会自动出现内容（每秒刷新一次）。'),
+      );
+    } else {
+      body.appendChild(
+        hint(`没有包含「${keyword.trim()}」的日志行，换个关键词或清空输入框查看全部。`),
+      );
+    }
+
+    updateCount(filtered.length);
+    describePath();
+  }
+
+  async function refresh() {
+    if (disposed || inFlight) return;
+    inFlight = true;
+    // 记下这次请求的来源：用户在这 1 秒内切到另一个分栏时，回来的旧结果必须丢弃，
+    // 否则「访问日志」的行会短暂显示在「服务日志」分栏下。
+    const requested = source;
+    try {
+      const { response, data } = await requestMediaWarpLog(requested, logAbort.signal);
+      if (disposed || requested !== source) return;
+      if (!response.ok) {
+        throw new Error(data.message || `读取日志失败（HTTP ${response.status}）`);
+      }
+      const next = Array.isArray(data.lines) ? data.lines.map(String) : [];
+      const changed =
+        next.length !== lines.length || next.some((line, index) => line !== lines[index]);
+      lines = next;
+      meta = {
+        path: data.path || '',
+        dir: data.dir || '',
+        day: data.day || null,
+        truncated: Boolean(data.truncated),
+        file_enabled: data.file_enabled !== false,
+        limit: Number(data.limit) || 2000,
+      };
+      // 行没有变化就不重绘：否则每轮轮询都重建一次 DOM，往上翻历史时会被拽回底部。
+      if (changed) {
+        renderLines();
+      } else {
+        updateCount(filterLogLines(lines, keyword).length);
+        describePath();
+      }
+    } catch (err) {
+      if (disposed) return;
+      body.textContent = '';
+      body.appendChild(
+        element(
+          'p',
+          'modal-error',
+          err.name === 'AbortError' ? '读取日志超时，正在重试…' : err.message,
+        ),
+      );
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  const onKeydown = (event) => {
+    if (event.key === 'Escape') closeMediaWarpLog();
+  };
+  mask.addEventListener('click', (event) => {
+    if (event.target === mask) closeMediaWarpLog();
+  });
+  window.addEventListener('keydown', onKeydown);
+
+  const timer = window.setInterval(refresh, MEDIAWARP_LOG_POLL_INTERVAL);
+  mediawarpLogClose = () => {
+    disposed = true;
+    logAbort.abort();
+    window.clearInterval(timer);
+    window.removeEventListener('keydown', onKeydown);
+    mask.remove();
+  };
+
+  renderLines();
+  count.textContent = '加载中…';
+  refresh();
 }
 
 async function importMediaWarp() {

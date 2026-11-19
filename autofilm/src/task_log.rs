@@ -31,8 +31,8 @@ use tracing_subscriber::{
 
 /// 单个任务最多保留的日志行数。
 pub const MAX_LINES: usize = 1024;
-/// 孤儿任务日志文件的保留天数，与全局按天日志的清理策略一致。
-const LOG_KEEP_DAYS: u64 = 14;
+/// 孤儿任务日志文件的保留天数，与全局按天日志的清理策略（7 天）保持一致。
+const LOG_KEEP_DAYS: u64 = 7;
 /// tracing span 上携带任务键的字段名。
 const KEY_FIELD: &str = "task_log_key";
 
