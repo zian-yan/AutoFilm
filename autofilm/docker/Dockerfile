@@ -26,7 +26,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked && \
     cp /workspace/target/release/autofilm /tmp/autofilm
 
-# MediaWarp 使用 submodule mediawarp/（zian-yan/MediaWarp，当前指向 v1.2.3）的源码编译。
+# MediaWarp 使用 submodule mediawarp/（zian-yan/MediaWarp，当前指向 0757f0e，
+# 即 v1.2.3 之后补上「日志按来源分目录 + 7 天保留」的提交）的源码编译。
 # Go 依赖仍由 go mod download 从模块代理获取；如需完全离线，先在 mediawarp/
 # 下执行 `go mod vendor`，并把下面的构建改成 `go build -mod=vendor`。
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS mediawarp-builder
