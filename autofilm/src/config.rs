@@ -252,7 +252,7 @@ fn warn_legacy_web_section(value: &serde_yaml::Value) {
     }
 }
 
-/// 提示旧版把并发 / 下载 / 同步选项写在单个任务里的用户迁移到全局配置。
+/// 提示旧版把并发 / 下载 / 同步 / 生成后缀写在单个任务里的用户迁移到全局配置。
 ///
 /// 这些字段已经从任务结构体上移到根级 `alist2strm`，任务里的同名键会被 serde
 /// 直接忽略；不提示的话用户会以为改动生效了（实际用的是全局默认值）。
@@ -268,12 +268,12 @@ fn warn_legacy_alist2strm_fields(value: &serde_yaml::Value) {
         let Some(map) = task.as_mapping() else {
             continue;
         };
-        for key in ["concurrency", "download", "sync"] {
+        for key in ["concurrency", "download", "sync", "strm_ext"] {
             if map.contains_key(serde_yaml::Value::String(key.to_string())) {
                 warn!(
                     index,
                     field = key,
-                    "alist2strm_tasks 中仍存在任务级 `{key}` 配置，该选项已迁移到全局 \
+                    "alist2strm_tasks 中仍存在任务级 `{key}` 配置，该选项只支持配置在全局 \
                      `alist2strm` 段，本次将被忽略；请把该值移到全局配置后从任务中删除"
                 );
             }
@@ -848,6 +848,14 @@ mod tests {
         assert_eq!(config.alist2strm_tasks[0].source_dir, "/ani");
         // 并发 / 下载 / 同步已上移到全局设置，任务里不再有这些字段。
         assert_eq!(config.alist2strm.concurrency, 50);
+        assert_eq!(
+            config.alist2strm.strm_ext,
+            crate::extensions::VIDEO_EXTS
+                .iter()
+                .map(|ext| (*ext).to_string())
+                .collect::<Vec<_>>(),
+            "示例配置的生成后缀应与默认视频后缀保持一致"
+        );
         assert!(!config.alist2strm.download.enable);
         assert_eq!(config.alist2strm.download.concurrency, 5);
         assert!(
@@ -895,12 +903,17 @@ alist2strm_tasks:
       subtitle: true
     sync:
       enabled: true
+    strm_ext: [.iso]
 ";
         let config = Config::from_yaml(yaml).expect("legacy config should parse");
         assert_eq!(config.alist2strm_tasks.len(), 1);
         assert_eq!(config.alist2strm.concurrency, 50, "任务级并发应被忽略");
         assert!(!config.alist2strm.download.enable, "任务级下载应被忽略");
         assert!(config.alist2strm.sync.is_none(), "任务级同步应被忽略");
+        assert!(
+            config.alist2strm.strm_ext.is_empty(),
+            "任务级 strm_ext 应被忽略"
+        );
     }
 
     #[test]

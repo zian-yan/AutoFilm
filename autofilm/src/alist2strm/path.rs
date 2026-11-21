@@ -1,6 +1,9 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Component, Path, PathBuf},
+};
 
-use crate::extensions::VIDEO_EXTS;
+use crate::extensions::ISO_EXT;
 
 /// 返回文件名的小写扩展名。
 ///
@@ -88,8 +91,9 @@ pub fn download_url(server_url: &str, base_path: &str, full_path: &str, sign: &s
 /// 计算远端路径对应的本地目标路径。
 ///
 /// 非平铺模式会保留 `source_dir` 之下的目录结构；平铺模式只使用文件名。
-/// 视频文件会转换为 `.strm` 后缀。BDMV 主片会以 BDMV 根目录名生成单个
-/// 电影标题 `.strm`，避免把整盘结构里的多个 m2ts 都暴露给媒体库。
+/// 后缀命中 `strm_exts` 的源文件会转换为 `.strm`（ISO 镜像按
+/// [`strm_file_path`] 的规则保留源后缀）。BDMV 主片会以 BDMV 根目录名生成
+/// 单个电影标题 `.strm`，避免把整盘结构里的多个 m2ts 都暴露给媒体库。
 ///
 /// 文件名与目录名来自远端接口，属于外部输入，因此所有片段都会经过
 /// [`sanitize_components`] 过滤，确保结果永远落在 `target_dir` 之内。
@@ -100,6 +104,7 @@ pub fn local_path(
     target_dir: &Path,
     flatten_mode: bool,
     bdmv_root: Option<&str>,
+    strm_exts: &HashSet<String>,
 ) -> PathBuf {
     // BDMV 只为最大 m2ts 生成一个电影标题 .strm，避免整盘结构被扫成多个视频。
     if let Some(bdmv_root) = bdmv_root {
@@ -116,7 +121,7 @@ pub fn local_path(
         };
     }
 
-    let mut local_path = if flatten_mode {
+    let local_path = if flatten_mode {
         target_dir.join(safe_file_name(name, "unnamed"))
     } else {
         let mut relative = sanitize_components(&relative_from_source(full_path, source_dir));
@@ -126,7 +131,29 @@ pub fn local_path(
         target_dir.join(relative)
     };
 
-    if VIDEO_EXTS.contains(&suffix_of(name).as_str()) {
+    strm_file_path(local_path, &suffix_of(name), strm_exts)
+}
+
+/// 把源文件路径改写为对应的 `.strm` 输出路径。
+///
+/// 只有后缀在 `strm_exts` 里的源文件才会生成 `.strm`，其余保持原样：
+/// - 普通视频：`xxx.mkv` → `xxx.strm`（替换源后缀）；
+/// - ISO 镜像：`xxx.iso` → `xxx.iso.strm`（保留源后缀再追加 `.strm`，
+///   这是媒体服务器识别 ISO 原盘所要求的命名）。
+///
+/// 后缀比较与输出都使用规范小写，因此 `xxx.ISO` 会得到 `xxx.iso.strm`。
+/// 改写基于已经过安全过滤的路径，因此 Windows 上的非法字符替换、保留名
+/// 加前缀等结果都不会被绕过。
+fn strm_file_path(local_path: PathBuf, suffix: &str, strm_exts: &HashSet<String>) -> PathBuf {
+    if !strm_exts.contains(suffix) {
+        return local_path;
+    }
+
+    let mut local_path = local_path;
+    if suffix == ISO_EXT {
+        // set_extension 只替换最后一段后缀：`xxx.ISO` + `iso.strm` → `xxx.iso.strm`。
+        local_path.set_extension(format!("{}.strm", ISO_EXT.trim_start_matches('.')));
+    } else {
         local_path.set_extension("strm");
     }
     local_path
@@ -271,6 +298,18 @@ fn encode_path(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 默认视频后缀集合（与全局未配置 `strm_ext` 时一致）。
+    fn video_exts() -> HashSet<String> {
+        crate::extensions::VIDEO_EXTS
+            .iter()
+            .map(|ext| (*ext).to_string())
+            .collect()
+    }
+
+    fn exts(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|ext| (*ext).to_string()).collect()
+    }
+
     #[test]
     fn joins_alist_paths_without_double_slashes() {
         assert_eq!(join_alist_path("/", "movie.mkv"), "/movie.mkv");
@@ -315,13 +354,115 @@ mod tests {
                 "/ani",
                 target_dir,
                 false,
-                None
+                None,
+                &video_exts()
             ),
             PathBuf::from("/media/ani/2026/01.strm")
         );
         assert_eq!(
-            local_path("/ani/2026/01.mkv", "01.mkv", "/ani", target_dir, true, None),
+            local_path(
+                "/ani/2026/01.mkv",
+                "01.mkv",
+                "/ani",
+                target_dir,
+                true,
+                None,
+                &video_exts()
+            ),
             PathBuf::from("/media/ani/01.strm")
+        );
+    }
+
+    #[test]
+    fn local_path_keeps_iso_suffix_before_strm() {
+        let target_dir = Path::new("/media/movies");
+        let strm_exts = exts(&[".iso", ".mkv"]);
+
+        // ISO 保留源后缀：xxx.iso → xxx.iso.strm（两种模式规则一致）。
+        assert_eq!(
+            local_path(
+                "/movies/2026/沙丘.iso",
+                "沙丘.iso",
+                "/movies",
+                target_dir,
+                false,
+                None,
+                &strm_exts
+            ),
+            PathBuf::from("/media/movies/2026/沙丘.iso.strm")
+        );
+        assert_eq!(
+            local_path(
+                "/movies/沙丘.iso",
+                "沙丘.iso",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &strm_exts
+            ),
+            PathBuf::from("/media/movies/沙丘.iso.strm")
+        );
+
+        // 大写后缀同样识别，输出统一小写。
+        assert_eq!(
+            local_path(
+                "/movies/DUNE.ISO",
+                "DUNE.ISO",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &strm_exts
+            ),
+            PathBuf::from("/media/movies/DUNE.iso.strm")
+        );
+
+        // 非 ISO 的自定义后缀仍按替换规则输出。
+        assert_eq!(
+            local_path(
+                "/movies/DUNE.mkv",
+                "DUNE.mkv",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &strm_exts
+            ),
+            PathBuf::from("/media/movies/DUNE.strm")
+        );
+    }
+
+    #[test]
+    fn local_path_ignores_exts_outside_strm_list() {
+        let target_dir = Path::new("/media/movies");
+
+        // 未配置 .iso：保持原文件名，交给伴生文件下载流程处理。
+        assert_eq!(
+            local_path(
+                "/movies/沙丘.iso",
+                "沙丘.iso",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &video_exts()
+            ),
+            PathBuf::from("/media/movies/沙丘.iso")
+        );
+
+        // 只配置 .iso：视频后缀不再生成 .strm。
+        assert_eq!(
+            local_path(
+                "/movies/DUNE.mkv",
+                "DUNE.mkv",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &exts(&[".iso"])
+            ),
+            PathBuf::from("/media/movies/DUNE.mkv")
         );
     }
 
@@ -337,19 +478,36 @@ mod tests {
                 "/ani",
                 target_dir,
                 false,
-                None
+                None,
+                &video_exts()
             ),
             PathBuf::from("/media/ani/etc/cron.d/evil.strm")
         );
 
         // 绝对路径形式的文件名不会替换掉 target_dir。
         assert_eq!(
-            local_path("/ani/x.mkv", "/etc/passwd", "/ani", target_dir, true, None),
+            local_path(
+                "/ani/x.mkv",
+                "/etc/passwd",
+                "/ani",
+                target_dir,
+                true,
+                None,
+                &video_exts()
+            ),
             PathBuf::from("/media/ani/passwd")
         );
 
         // 纯 `..` 名称回退为 unnamed，仍然留在 target_dir 内。
-        let escaped = local_path("/ani/..", "..", "/ani", target_dir, true, None);
+        let escaped = local_path(
+            "/ani/..",
+            "..",
+            "/ani",
+            target_dir,
+            true,
+            None,
+            &video_exts(),
+        );
         assert_eq!(escaped, PathBuf::from("/media/ani/unnamed"));
     }
 
@@ -363,6 +521,7 @@ mod tests {
             target_dir,
             false,
             Some("/ani/../../etc"),
+            &video_exts(),
         );
 
         assert!(
@@ -389,7 +548,15 @@ mod tests {
 
         // 保留设备名加前缀，否则 Windows 直接拒绝创建。
         assert_eq!(
-            local_path("/ani/CON", "CON", "/ani", target_dir, true, None),
+            local_path(
+                "/ani/CON",
+                "CON",
+                "/ani",
+                target_dir,
+                true,
+                None,
+                &video_exts()
+            ),
             PathBuf::from(r"C:\media\_CON")
         );
 
@@ -397,7 +564,15 @@ mod tests {
         // 注意 `:` 会被 `Path` 当成盘符前缀直接丢弃，这里用文件系统同样拒绝的
         // `?` / `*` 来验证字符替换。
         assert_eq!(
-            local_path("/ani/a?b*.mkv", "a?b*.mkv", "/ani", target_dir, true, None),
+            local_path(
+                "/ani/a?b*.mkv",
+                "a?b*.mkv",
+                "/ani",
+                target_dir,
+                true,
+                None,
+                &video_exts()
+            ),
             PathBuf::from(r"C:\media\a_b_.strm")
         );
 
@@ -409,7 +584,8 @@ mod tests {
                 "/ani",
                 target_dir,
                 true,
-                None
+                None,
+                &video_exts()
             ),
             PathBuf::from(r"C:\media\trailing")
         );

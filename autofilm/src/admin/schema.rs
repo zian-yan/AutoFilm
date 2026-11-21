@@ -89,7 +89,7 @@ pub fn schema() -> Value {
                 "parent": "alist2strm_tasks",
                 "title": "同步全局设置",
                 "tab_label": "全局设置",
-                "subtitle": "所有 Alist2Strm 同步任务共用的并发、伴生文件下载与同步删除策略，改一处即对全部任务生效；属于业务配置，保存在 config.yaml",
+                "subtitle": "所有 Alist2Strm 同步任务共用的生成后缀、并发、伴生文件下载与同步删除策略，改一处即对全部任务生效；属于业务配置，保存在 config.yaml",
                 // 卡片头标题：分栏已经写着「全局设置」，这里再重复一遍会浪费一行的信息量，
                 // 改用它实际承载的内容命名。
                 "item_label": "同步策略",
@@ -97,6 +97,7 @@ pub fn schema() -> Value {
                 "addable": false,
                 "removable": false,
                 "fields": [
+                    { "key": "strm_ext", "label": "生成后缀", "kind": "list", "placeholder": ".mp4, .mkv, .iso", "help": "只有匹配这些后缀的源文件才生成 .strm；留空使用默认视频后缀（.mp4 .mkv .flv .avi .wmv .ts .rmvb .webm .mpg .m2ts）。.iso 会输出为 xxx.iso.strm，其它后缀输出为 xxx.strm" },
                     { "key": "concurrency", "label": "并发数", "kind": "number", "min": 1, "max": 1024, "step": 1, "help": "同时处理的文件数量上限，可减轻运行设备与 AList 负载" },
                     { "key": "download.enable", "label": "下载伴生文件", "kind": "bool", "help": "字幕、图片、NFO 与自定义后缀；平铺模式下始终不下载" },
                     { "key": "download.subtitle", "label": "下载字幕", "kind": "bool", "help": ".ass / .srt / .ssa / .sub" },
@@ -376,4 +377,41 @@ pub fn schema() -> Value {
             { "value": "1080p", "label": "1080p (1920×1080)" }
         ]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 「生成后缀」属于全局设置：面板必须把它挂在 `alist2strm` 单例分区上，
+    /// 且任务表单里不能出现同名输入框（同一份配置两处入口必然打架）。
+    #[test]
+    fn generation_suffixes_live_in_global_settings() {
+        let schema = schema();
+        let sections = schema["sections"].as_array().expect("sections");
+        let section = |key: &str| {
+            sections
+                .iter()
+                .find(|section| section["key"] == key)
+                .unwrap_or_else(|| panic!("missing section {key}"))
+        };
+
+        let global = section("alist2strm");
+        assert_eq!(global["single"], true);
+        let field = global["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .find(|field| field["key"] == "strm_ext")
+            .expect("全局设置缺少 strm_ext 字段");
+        assert_eq!(field["kind"], "list");
+
+        let task_fields = section("alist2strm_tasks")["fields"]
+            .as_array()
+            .expect("task fields");
+        assert!(
+            task_fields.iter().all(|field| field["key"] != "strm_ext"),
+            "任务表单不应再出现 strm_ext"
+        );
+    }
 }

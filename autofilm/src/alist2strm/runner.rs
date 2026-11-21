@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     alist2strm::{
-        config::{Config, GlobalConfig, SmartProtectionConfig},
+        config::{Config, GlobalConfig, SmartProtectionConfig, normalize_ext},
         errors::{Error, Result},
         path::{self, bdmv_root, download_url, is_bdmv_file, join_alist_path, suffix_of},
         protection::ProtectionManager,
@@ -27,7 +27,7 @@ use crate::{
         summary::{RunStats, RunSummary},
         utils::{collect_local_files, companion_file_is_stale, remove_empty_parents},
     },
-    extensions::{IMAGE_EXTS, NFO_EXTS, SUBTITLE_EXTS, VIDEO_EXTS},
+    extensions::{IMAGE_EXTS, NFO_EXTS, SUBTITLE_EXTS},
 };
 
 /// 单个伴生文件的下载体积上限。
@@ -44,6 +44,11 @@ pub struct Alist2Strm {
     config: Config,
     /// 全局并发 / 下载 / 同步策略，对所有同步任务共用。
     settings: GlobalConfig,
+    /// 本次任务实际生效的 `.strm` 源文件后缀（已规范小写、去重、缺失回退）。
+    ///
+    /// 在构造时算一次即可：配置在任务生命周期内不可变，而扫描会对成千上万个
+    /// 文件判断后缀，不能每次都重新规范化一遍配置。
+    strm_exts: HashSet<String>,
     client: Arc<Client>,
     server_url: String,
 }
@@ -134,9 +139,13 @@ impl Alist2Strm {
         client: Arc<Client>,
         server_url: String,
     ) -> Self {
+        // 后缀集合在这里定稿：缺失 / 空配置回退默认视频后缀，大小写与重复项
+        // 都已收敛，后续扫描、写盘、清理三处共用同一份结果。
+        let strm_exts = settings.strm_exts();
         Self {
             config,
             settings,
+            strm_exts,
             client,
             server_url,
         }
@@ -279,6 +288,17 @@ impl Alist2Strm {
             }
         );
         info!("并发数: {}", self.settings.concurrency.max(1));
+        let mut exts: Vec<&str> = self.strm_exts.iter().map(String::as_str).collect();
+        exts.sort_unstable();
+        info!(
+            "生成后缀: {}（{}）",
+            exts.join(" "),
+            if self.settings.has_custom_strm_ext() {
+                "自定义"
+            } else {
+                "默认"
+            }
+        );
         info!("{}", "=".repeat(50));
     }
 
@@ -383,10 +403,9 @@ impl Alist2Strm {
         let client = self.client.clone();
         let me = client.me().await?;
         let download_exts = self.download_exts();
-        let mut process_exts = VIDEO_EXTS
-            .iter()
-            .map(|ext| ext.to_string())
-            .collect::<HashSet<_>>();
+        // 处理集 = 生成 .strm 的后缀 ∪ 需要下载的伴生文件后缀。
+        // 两者有交集时以生成 .strm 为准（见 process_path 的路径判定）。
+        let mut process_exts = self.strm_exts.clone();
         process_exts.extend(download_exts.iter().cloned());
         let sync_ignore_pattern = self
             .settings
@@ -640,7 +659,11 @@ impl Alist2Strm {
         };
 
         if let Some(metadata) = existing {
-            if context.download_exts.contains(&suffix)
+            // 只有真正的伴生文件才按「体积 / 时间」判断是否过期：同一后缀若被
+            // 配置成生成 .strm，本地文件是几十字节的指针文件，拿视频体积来比
+            // 会每轮都判定过期并反复重写。
+            if !self.strm_exts.contains(&suffix)
+                && context.download_exts.contains(&suffix)
                 && companion_file_is_stale(
                     &metadata,
                     object.size.max(0) as u64,
@@ -1012,8 +1035,10 @@ impl Alist2Strm {
 
     /// 计算远端文件对应的本地输出路径。
     ///
-    /// 该函数把任务级别的 `source_dir`、`target_dir`、`flatten_mode` 和 BDMV
-    /// 特殊规则传给路径规则，得到最终要写入或下载的本地文件位置。
+    /// 该函数把任务级别的 `source_dir`、`target_dir`、`flatten_mode`、后缀
+    /// 白名单和 BDMV 特殊规则传给路径规则，得到最终要写入或下载的本地文件
+    /// 位置。扫描判定、写盘、同步清理都走这一条路径，保证三者对「一个远端
+    /// 文件对应哪个本地文件」的理解完全一致。
     fn local_path(&self, full_path: &str, name: &str) -> PathBuf {
         let bdmv_root = is_bdmv_file(full_path, name)
             .then(|| bdmv_root(full_path))
@@ -1025,6 +1050,7 @@ impl Alist2Strm {
             &self.config.target_dir,
             self.config.flatten_mode,
             bdmv_root.as_deref(),
+            &self.strm_exts,
         )
     }
 
@@ -1052,7 +1078,7 @@ impl Alist2Strm {
                 .download
                 .other_ext
                 .iter()
-                .map(|ext| ext.to_ascii_lowercase()),
+                .filter_map(|ext| normalize_ext(ext)),
         );
         exts
     }
@@ -1358,6 +1384,119 @@ mod tests {
             );
         }
         assert_eq!(context.stats.strm_created_count.load(Ordering::Relaxed), 6);
+
+        let _ = fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// ISO 源文件按「基名 + .iso + .strm」输出，其它后缀仍替换为 `.strm`。
+    ///
+    /// 这条规则必须贯穿扫描判定、写盘与清理：三者都走 `local_path`，本测试
+    /// 从写盘侧锁定结果，`path` 模块的单测从路径规则侧锁定同一份期望。
+    #[tokio::test]
+    async fn iso_source_generates_iso_strm_suffix() {
+        let unique = format!(
+            "autofilm-iso-strm-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let target_dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let config = test_config(target_dir.clone());
+        // 全局配置里大小写混写，验证归一化后仍能命中 `.iso`。
+        let settings = GlobalConfig {
+            strm_ext: vec!["ISO".to_string(), ".iso".to_string()],
+            ..test_settings()
+        };
+        let runner = Alist2Strm::new(
+            config,
+            settings,
+            Arc::new(
+                Client::new("http://127.0.0.1:5244")
+                    .unwrap()
+                    .with_authentication(Token("token".to_string())),
+            ),
+            "http://127.0.0.1:5244".to_string(),
+        );
+        let context = Arc::new(test_context());
+        let files = vec![("/source/沙丘.iso".to_string(), test_object("沙丘.iso"))];
+
+        runner.process_paths(context, files).await.unwrap();
+
+        let expected = target_dir.join("沙丘.iso.strm");
+        assert!(expected.exists(), "应生成 {}", expected.display());
+        assert!(!target_dir.join("沙丘.strm").exists(), "ISO 不应丢掉源后缀");
+        let content = fs::read_to_string(&expected).await.unwrap();
+        assert!(
+            content.starts_with("http://127.0.0.1:5244/d/source/"),
+            "strm 内容应为下载直链: {content}"
+        );
+
+        let _ = fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// 只有命中 `strm_ext` 的文件才会进入处理流程。
+    #[tokio::test]
+    async fn classify_path_only_accepts_configured_exts() {
+        let unique = format!(
+            "autofilm-strm-ext-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let target_dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let config = test_config(target_dir.clone());
+        let settings = GlobalConfig {
+            strm_ext: vec![".iso".to_string()],
+            ..test_settings()
+        };
+        let runner = Alist2Strm::new(
+            config,
+            settings,
+            Arc::new(
+                Client::new("http://127.0.0.1:5244")
+                    .unwrap()
+                    .with_authentication(Token("token".to_string())),
+            ),
+            "http://127.0.0.1:5244".to_string(),
+        );
+
+        let mut context = test_context();
+        // 处理集合由任务后缀推导而来，这里模拟 create_context 的结果。
+        context.process_exts = HashSet::from([".iso".to_string()]);
+        let mut processed = HashSet::new();
+
+        let skipped = runner
+            .classify_path(
+                &context,
+                "/source/movie.mkv",
+                &test_object("movie.mkv"),
+                &mut processed,
+            )
+            .await
+            .unwrap();
+        assert_eq!(skipped, PathDecision::Skip, ".mkv 未配置时不应处理");
+        assert!(processed.is_empty(), "被跳过的文件不应进入清理集合");
+
+        let accepted = runner
+            .classify_path(
+                &context,
+                "/source/movie.iso",
+                &test_object("movie.iso"),
+                &mut processed,
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted, PathDecision::Process);
+        assert!(
+            processed.contains(&target_dir.join("movie.iso.strm")),
+            "清理集合里应是 .iso.strm 而不是 .strm"
+        );
 
         let _ = fs::remove_dir_all(&target_dir).await;
     }

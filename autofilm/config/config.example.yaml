@@ -44,6 +44,10 @@ media_servers:
 
 
 alist2strm:                                # Alist2Strm 全局设置：所有同步任务共用一份，任务里不再单独配置
+  strm_ext: [.mp4, .mkv, .flv, .avi, .wmv, .ts, .rmvb, .webm, .mpg, .m2ts]
+                                           # 需要生成 .strm 的源文件后缀白名单（可省略，省略即使用这组默认视频后缀）
+                                           # 大小写不敏感、可带或不带 `.` 前缀，重复项自动去重；只对匹配的文件生成 .strm
+                                           # .iso 会输出为 xxx.iso.strm，其它后缀输出为 xxx.strm
   concurrency: 50                          # 同时处理的文件数量上限，可以减轻运行设备与 AList 服务器负载
   download:                                # 伴生文件下载（字幕、图片、NFO、自定义后缀）
     enable: false                          # 是否下载伴生文件；平铺模式下始终不下载
