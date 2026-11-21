@@ -27,7 +27,7 @@ use crate::{
         summary::{RunStats, RunSummary},
         utils::{collect_local_files, companion_file_is_stale, remove_empty_parents},
     },
-    extensions::{IMAGE_EXTS, NFO_EXTS, SUBTITLE_EXTS},
+    extensions::{IMAGE_EXTS, ISO_EXT, NFO_EXTS, SUBTITLE_EXTS},
 };
 
 /// 单个伴生文件的下载体积上限。
@@ -51,6 +51,29 @@ pub struct Alist2Strm {
     strm_exts: HashSet<String>,
     client: Arc<Client>,
     server_url: String,
+}
+
+/// 一个待处理的远端文件，连同它所在目录的 ISO 原盘基名。
+///
+/// 伴生文件要不要插 `.iso`，取决于**同目录里有没有对应的 ISO**，所以目录级
+/// 上下文必须跟着文件进入处理阶段：扫描判重、写盘、清理三处读的都是同一份。
+#[derive(Debug)]
+struct ScannedFile {
+    full_path: String,
+    object: ObjResp,
+    /// 同目录下会生成 `.iso.strm` 的原盘基名（去掉 `.iso`）；空集表示没有 ISO。
+    iso_bases: Arc<HashSet<String>>,
+}
+
+impl ScannedFile {
+    /// 没有 ISO 上下文的文件：BDMV 主片批次与单元测试用。
+    fn plain(full_path: String, object: ObjResp) -> Self {
+        Self {
+            full_path,
+            object,
+            iso_bases: Arc::new(HashSet::new()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -207,10 +230,18 @@ impl Alist2Strm {
             info!(">>> 开始处理 BDMV 主片，共 {} 个", bdmv_paths.len());
         }
         for (full_path, object) in &bdmv_paths {
-            let local_path = self.local_path(full_path, &object.name);
+            // BDMV 主片命名只取电影标题，与同目录伴生文件无关，不需要 ISO 上下文。
+            let local_path = self.local_path(full_path, &object.name, &HashSet::new());
             processed_local_paths.insert(local_path);
         }
-        self.process_paths(context.clone(), bdmv_paths).await?;
+        self.process_paths(
+            context.clone(),
+            bdmv_paths
+                .into_iter()
+                .map(|(full_path, object)| ScannedFile::plain(full_path, object))
+                .collect(),
+        )
+        .await?;
 
         if self.sync_enabled() {
             info!(">>> 开始清理");
@@ -527,9 +558,9 @@ impl Alist2Strm {
                 item_count = resp.content.len(),
                 "AList 目录扫描完成"
             );
-            // 本目录的一批文件：视频的 .strm 与字幕 / 图片 / NFO 等伴生文件
-            // 混在同一批里，保证二者「同时生成」。
-            let mut batch: Vec<(String, ObjResp)> = Vec::new();
+            // 先把这个目录「看完」再判定：伴生文件要不要插 `.iso` 取决于同目录
+            // 有没有对应的 ISO 原盘，逐条流式判断拿不到这个信息。
+            let mut files: Vec<(String, ObjResp)> = Vec::with_capacity(resp.content.len());
             for item in resp.content {
                 let object = item.object;
                 let full_path = join_alist_path(&dir_path, &object.name);
@@ -556,9 +587,22 @@ impl Alist2Strm {
                     continue;
                 }
                 RunStats::inc(&context.stats.discovered_file_count);
+                files.push((full_path, object));
+            }
 
+            let iso_bases = Arc::new(self.iso_bases(&files));
+            // 本目录的一批文件：视频的 .strm 与字幕 / 图片 / NFO 等伴生文件
+            // 混在同一批里，保证二者「同时生成」。
+            let mut batch: Vec<ScannedFile> = Vec::with_capacity(files.len());
+            for (full_path, object) in files {
                 match self
-                    .classify_path(&context, &full_path, &object, processed_local_paths)
+                    .classify_path(
+                        &context,
+                        &full_path,
+                        &object,
+                        &iso_bases,
+                        processed_local_paths,
+                    )
                     .await
                 {
                     Ok(PathDecision::Process) => {
@@ -567,7 +611,11 @@ impl Alist2Strm {
                             path = %full_path,
                             "AList 路径加入当前目录批次"
                         );
-                        batch.push((full_path, object));
+                        batch.push(ScannedFile {
+                            full_path,
+                            object,
+                            iso_bases: iso_bases.clone(),
+                        });
                     }
                     Ok(PathDecision::Bdmv) => {
                         // BDMV 需要等同目录所有 m2ts 都收集完，才能按大小选主片。
@@ -614,6 +662,7 @@ impl Alist2Strm {
         context: &RunContext,
         full_path: &str,
         object: &ObjResp,
+        iso_bases: &HashSet<String>,
         processed_local_paths: &mut HashSet<PathBuf>,
     ) -> Result<PathDecision> {
         if full_path.contains("@eaDir")
@@ -643,7 +692,7 @@ impl Alist2Strm {
             return Ok(PathDecision::Bdmv);
         }
 
-        let local_path = self.local_path(full_path, &object.name);
+        let local_path = self.local_path(full_path, &object.name, iso_bases);
         processed_local_paths.insert(local_path.clone());
 
         // 一次 metadata 同时回答「本地是否存在」和「伴生文件是否过期」，
@@ -691,16 +740,12 @@ impl Alist2Strm {
     ///
     /// 扫描阶段每个远端目录调用一次（批内并发、目录间串行）；扫描结束后的
     /// BDMV 主片批次也走这里。单个路径失败会记录并跳过，不中断同批次其它路径。
-    async fn process_paths(
-        &self,
-        context: Arc<RunContext>,
-        files: Vec<(String, ObjResp)>,
-    ) -> Result<()> {
+    async fn process_paths(&self, context: Arc<RunContext>, files: Vec<ScannedFile>) -> Result<()> {
         // 用 bounded concurrency 限制并发处理数量，避免压垮 AList 或本地 IO。
         futures_util::stream::iter(files)
-            .for_each_concurrent(self.settings.concurrency.max(1), |(full_path, object)| {
+            .for_each_concurrent(self.settings.concurrency.max(1), |file| {
                 let context = context.clone();
-                self.process_path_logged(context, full_path, object)
+                self.process_path_logged(context, file)
             })
             .await;
 
@@ -711,13 +756,16 @@ impl Alist2Strm {
     ///
     /// 该函数把 `process_path` 的错误降级为警告日志，使单个文件的 `.strm` 写入
     /// 或伴生文件下载失败不会影响后续路径继续处理。
-    async fn process_path_logged(
-        &self,
-        context: Arc<RunContext>,
-        full_path: String,
-        object: ObjResp,
-    ) {
-        if let Err(err) = self.process_path(&context, &full_path, &object).await {
+    async fn process_path_logged(&self, context: Arc<RunContext>, file: ScannedFile) {
+        let ScannedFile {
+            full_path,
+            object,
+            iso_bases,
+        } = file;
+        if let Err(err) = self
+            .process_path(&context, &full_path, &object, &iso_bases)
+            .await
+        {
             RunStats::inc(&context.stats.failed_path_count);
             // 把失败文件所在的目录记下来，下次强制重扫这个目录。
             context.note_failed_dir(remote_parent(&full_path));
@@ -728,12 +776,14 @@ impl Alist2Strm {
     /// 处理单个远端文件。
     ///
     /// 视频文件写入本地 `.strm`，字幕、图片、nfo 等伴生文件则从 AList 下载
-    /// 链接保存到本地。
+    /// 链接保存到本地。`iso_bases` 用于把同目录伴生文件改成 `xxx.iso.xxx.srt`
+    /// 这类媒体服务器能认领的名字。
     async fn process_path(
         &self,
         context: &RunContext,
         full_path: &str,
         object: &ObjResp,
+        iso_bases: &HashSet<String>,
     ) -> Result<()> {
         debug!(
             task_id = %self.config.id,
@@ -741,7 +791,7 @@ impl Alist2Strm {
             "正在处理 AList 路径"
         );
 
-        let local_path = self.local_path(full_path, &object.name);
+        let local_path = self.local_path(full_path, &object.name, iso_bases);
         // 双保险：路径规则已经过滤了 `..` 与绝对路径，这里再确认结果没有越界。
         if !local_path.starts_with(&self.config.target_dir) {
             return Err(Error::UnsafeLocalPath { path: local_path });
@@ -1036,10 +1086,10 @@ impl Alist2Strm {
     /// 计算远端文件对应的本地输出路径。
     ///
     /// 该函数把任务级别的 `source_dir`、`target_dir`、`flatten_mode`、后缀
-    /// 白名单和 BDMV 特殊规则传给路径规则，得到最终要写入或下载的本地文件
-    /// 位置。扫描判定、写盘、同步清理都走这一条路径，保证三者对「一个远端
-    /// 文件对应哪个本地文件」的理解完全一致。
-    fn local_path(&self, full_path: &str, name: &str) -> PathBuf {
+    /// 白名单、同目录 ISO 基名和 BDMV 特殊规则传给路径规则，得到最终要写入
+    /// 或下载的本地文件位置。扫描判定、写盘、同步清理都走这一条路径，保证
+    /// 三者对「一个远端文件对应哪个本地文件」的理解完全一致。
+    fn local_path(&self, full_path: &str, name: &str, iso_bases: &HashSet<String>) -> PathBuf {
         let bdmv_root = is_bdmv_file(full_path, name)
             .then(|| bdmv_root(full_path))
             .flatten();
@@ -1051,7 +1101,25 @@ impl Alist2Strm {
             self.config.flatten_mode,
             bdmv_root.as_deref(),
             &self.strm_exts,
+            iso_bases,
         )
+    }
+
+    /// 收集同一目录里会生成 `.iso.strm` 的原盘基名（去掉 `.iso` 的文件名）。
+    ///
+    /// 只有 `.iso` 被配置成生成 `.strm` 时才有意义：否则 ISO 走的是伴生文件
+    /// 下载、不会产出 `xxx.iso.strm`，同目录字幕也就不需要跟着改名。
+    fn iso_bases(&self, files: &[(String, ObjResp)]) -> HashSet<String> {
+        if !self.strm_exts.contains(ISO_EXT) {
+            return HashSet::new();
+        }
+        files
+            .iter()
+            .filter(|(_, object)| suffix_of(&object.name) == ISO_EXT)
+            .filter_map(|(_, object)| object.name.get(..object.name.len() - ISO_EXT.len()))
+            .filter(|base| !base.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     /// 根据下载配置计算需要作为伴生文件保存的扩展名集合。
@@ -1332,7 +1400,10 @@ mod tests {
             "http://127.0.0.1:5244".to_string(),
         );
         let context = Arc::new(test_context());
-        let files = vec![("/source/movie.mkv".to_string(), test_object("movie.mkv"))];
+        let files = vec![ScannedFile::plain(
+            "/source/movie.mkv".to_string(),
+            test_object("movie.mkv"),
+        )];
 
         let result = runner.process_paths(context, files).await;
         let _ = fs::remove_file(&target_dir).await;
@@ -1368,10 +1439,10 @@ mod tests {
             "http://127.0.0.1:5244".to_string(),
         );
         let context = Arc::new(test_context());
-        let files: Vec<(String, ObjResp)> = (1..=6)
+        let files: Vec<ScannedFile> = (1..=6)
             .map(|index| {
                 let name = format!("movie-{index}.mkv");
-                (format!("/source/{name}"), test_object(&name))
+                ScannedFile::plain(format!("/source/{name}"), test_object(&name))
             })
             .collect();
 
@@ -1421,7 +1492,10 @@ mod tests {
             "http://127.0.0.1:5244".to_string(),
         );
         let context = Arc::new(test_context());
-        let files = vec![("/source/沙丘.iso".to_string(), test_object("沙丘.iso"))];
+        let files = vec![ScannedFile::plain(
+            "/source/沙丘.iso".to_string(),
+            test_object("沙丘.iso"),
+        )];
 
         runner.process_paths(context, files).await.unwrap();
 
@@ -1476,6 +1550,7 @@ mod tests {
                 &context,
                 "/source/movie.mkv",
                 &test_object("movie.mkv"),
+                &HashSet::new(),
                 &mut processed,
             )
             .await
@@ -1488,6 +1563,7 @@ mod tests {
                 &context,
                 "/source/movie.iso",
                 &test_object("movie.iso"),
+                &HashSet::new(),
                 &mut processed,
             )
             .await
@@ -1499,6 +1575,171 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// 同目录的字幕要跟着 ISO 改名，否则媒体服务器认领不到。
+    ///
+    /// 这里锁定的是「扫描判定 → 清理集合」这一侧：判定用的是改名后的路径，
+    /// 清理也按改名后的路径比对，不会出现「写盘叫 A、清理找 B」。
+    #[tokio::test]
+    async fn companion_subtitle_follows_iso_naming() {
+        let unique = format!(
+            "autofilm-iso-companion-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let target_dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let config = test_config(target_dir.clone());
+        let settings = GlobalConfig {
+            strm_ext: vec![".iso".to_string()],
+            ..test_settings()
+        };
+        let runner = Alist2Strm::new(
+            config,
+            settings,
+            Arc::new(
+                Client::new("http://127.0.0.1:5244")
+                    .unwrap()
+                    .with_authentication(Token("token".to_string())),
+            ),
+            "http://127.0.0.1:5244".to_string(),
+        );
+
+        let iso = test_object("Movie.iso");
+        let srt = test_object("Movie.zh-cn.srt");
+        let files = vec![
+            ("/source/Movie.iso".to_string(), iso.clone()),
+            ("/source/Movie.zh-cn.srt".to_string(), srt.clone()),
+        ];
+
+        // 目录级上下文：`Movie.iso` 的存在让同目录 `Movie.*` 伴生文件跟 `.iso`。
+        let iso_bases = runner.iso_bases(&files);
+        assert!(iso_bases.contains("Movie"), "应识别出 ISO 基名");
+
+        let mut context = test_context();
+        context.process_exts = HashSet::from([".iso".to_string(), ".srt".to_string()]);
+        let mut processed = HashSet::new();
+
+        for (full_path, object) in &files {
+            runner
+                .classify_path(&context, full_path, object, &iso_bases, &mut processed)
+                .await
+                .unwrap();
+        }
+
+        assert!(processed.contains(&target_dir.join("Movie.iso.strm")));
+        assert!(
+            processed.contains(&target_dir.join("Movie.iso.zh-cn.srt")),
+            "字幕应改名为 Movie.iso.zh-cn.srt，实际 {processed:?}"
+        );
+        assert!(
+            !processed.contains(&target_dir.join("Movie.zh-cn.srt")),
+            "不应再按原名登记字幕"
+        );
+
+        let _ = fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// 下载伴生文件时，落盘名字必须已经插上 `.iso`（走一遍真实 HTTP 路径）。
+    #[tokio::test]
+    async fn iso_companion_is_downloaded_with_iso_infix() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("应能启动本地桩服务");
+        let addr = listener.local_addr().unwrap();
+        // 一次性桩服务：回一个 200 + 固定内容，足够验证「下载后写到哪」。
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = "1\n00:00:01,000 --> 00:00:02,000\n字幕\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let target_dir = std::env::temp_dir().join(format!(
+            "autofilm-iso-download-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let settings = GlobalConfig {
+            strm_ext: vec![".iso".to_string()],
+            ..test_settings()
+        };
+        let runner = Alist2Strm::new(
+            test_config(target_dir.clone()),
+            settings,
+            Arc::new(
+                Client::new("http://127.0.0.1:5244")
+                    .unwrap()
+                    .with_authentication(Token("token".to_string())),
+            ),
+            "http://127.0.0.1:5244".to_string(),
+        );
+
+        let mut context = test_context();
+        context.server_url = format!("http://{addr}");
+        let iso_bases = HashSet::from(["Movie".to_string()]);
+        runner
+            .process_path(
+                &context,
+                "/source/Movie.zh-cn.srt",
+                &test_object("Movie.zh-cn.srt"),
+                &iso_bases,
+            )
+            .await
+            .expect("伴生文件应下载成功");
+
+        assert!(
+            target_dir.join("Movie.iso.zh-cn.srt").exists(),
+            "字幕应以 Movie.iso.zh-cn.srt 落盘"
+        );
+        assert!(!target_dir.join("Movie.zh-cn.srt").exists());
+
+        let _ = fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// `.iso` 没被配置成生成 `.strm` 时不存在 `xxx.iso.strm`，字幕不该改名。
+    #[tokio::test]
+    async fn iso_bases_are_empty_without_iso_in_strm_exts() {
+        let target_dir = std::env::temp_dir().join(format!(
+            "autofilm-iso-bases-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let runner = Alist2Strm::new(
+            test_config(target_dir),
+            test_settings(),
+            Arc::new(
+                Client::new("http://127.0.0.1:5244")
+                    .unwrap()
+                    .with_authentication(Token("token".to_string())),
+            ),
+            "http://127.0.0.1:5244".to_string(),
+        );
+
+        let files = vec![("/source/Movie.iso".to_string(), test_object("Movie.iso"))];
+        assert!(
+            runner.iso_bases(&files).is_empty(),
+            "未配置 .iso 时不应产生 ISO 上下文"
+        );
     }
 
     #[test]

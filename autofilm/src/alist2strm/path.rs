@@ -95,6 +95,9 @@ pub fn download_url(server_url: &str, base_path: &str, full_path: &str, sign: &s
 /// [`strm_file_path`] 的规则保留源后缀）。BDMV 主片会以 BDMV 根目录名生成
 /// 单个电影标题 `.strm`，避免把整盘结构里的多个 m2ts 都暴露给媒体库。
 ///
+/// `iso_bases` 是同一目录下 ISO 原盘的基名集合（去掉 `.iso` 的文件名）：
+/// 命中的伴生文件会在基名后插入 `.iso`，详见 [`renamed_companion_name`]。
+///
 /// 文件名与目录名来自远端接口，属于外部输入，因此所有片段都会经过
 /// [`sanitize_components`] 过滤，确保结果永远落在 `target_dir` 之内。
 pub fn local_path(
@@ -105,6 +108,7 @@ pub fn local_path(
     flatten_mode: bool,
     bdmv_root: Option<&str>,
     strm_exts: &HashSet<String>,
+    iso_bases: &HashSet<String>,
 ) -> PathBuf {
     // BDMV 只为最大 m2ts 生成一个电影标题 .strm，避免整盘结构被扫成多个视频。
     if let Some(bdmv_root) = bdmv_root {
@@ -121,17 +125,81 @@ pub fn local_path(
         };
     }
 
+    let suffix = suffix_of(name);
+    let renamed = renamed_companion_name(name, &suffix, strm_exts, iso_bases);
+
     let local_path = if flatten_mode {
-        target_dir.join(safe_file_name(name, "unnamed"))
+        target_dir.join(safe_file_name(
+            renamed.as_deref().unwrap_or(name),
+            "unnamed",
+        ))
     } else {
         let mut relative = sanitize_components(&relative_from_source(full_path, source_dir));
         if relative.file_name().is_none() {
             relative.push(safe_file_name(name, "unnamed"));
         }
+        // 改名只动文件名本身：目录结构、安全过滤与保留名处理都沿用原逻辑。
+        if let Some(renamed) = &renamed {
+            relative.set_file_name(safe_file_name(renamed, "unnamed"));
+        }
         target_dir.join(relative)
     };
 
-    strm_file_path(local_path, &suffix_of(name), strm_exts)
+    strm_file_path(local_path, &suffix, strm_exts)
+}
+
+/// 伴生文件在 ISO 原盘目录下的目标文件名。
+///
+/// 媒体服务器按「视频文件名去掉 `.strm`」来认领字幕、图片等伴生文件：
+/// `xxx.iso` 生成的是 `xxx.iso.strm`，此时同目录的 `xxx.zh-cn.srt` 必须叫
+/// `xxx.iso.zh-cn.srt` 才会被当成它的字幕；沿用原名会变成一份谁也认领不到
+/// 的孤立字幕。
+///
+/// 返回 `Some(新名字)` 表示需要改名；`None` 表示保持原名——源文件本身要生成
+/// `.strm`、目录里没有对应 ISO、或名字已经是 `xxx.iso.xxx.srt` 形态。
+fn renamed_companion_name(
+    name: &str,
+    suffix: &str,
+    strm_exts: &HashSet<String>,
+    iso_bases: &HashSet<String>,
+) -> Option<String> {
+    // ISO 没被配置成生成 .strm 时不存在 `xxx.iso.strm`，也就没有改名的依据。
+    if !strm_exts.contains(ISO_EXT) || strm_exts.contains(suffix) || iso_bases.is_empty() {
+        return None;
+    }
+
+    let base = iso_base_of(name, iso_bases)?;
+    let rest = &name[base.len()..];
+    // 已经带 `.iso` 的伴生文件（用户自己按规范命名，或上一轮改名的结果）不再插一次。
+    let already_iso = rest
+        .get(..ISO_EXT.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(ISO_EXT))
+        && rest.as_bytes().get(ISO_EXT.len()) == Some(&b'.');
+    if already_iso {
+        return None;
+    }
+
+    Some(format!("{base}{ISO_EXT}{rest}"))
+}
+
+/// 找出伴生文件属于哪个 ISO 基名。
+///
+/// 取最长匹配：目录里同时有 `A.iso` 与 `A.B.iso` 时，`A.B.zh-cn.srt` 应归给
+/// `A.B`。大小写不敏感（远端存储可能是 Windows / 网盘，大小写未必一致），
+/// 改名后统一采用 ISO 文件本身的写法。
+fn iso_base_of<'a>(name: &str, iso_bases: &'a HashSet<String>) -> Option<&'a str> {
+    iso_bases
+        .iter()
+        .filter(|base| {
+            // 只能是 `基名 + "."` 开头，避免 `Movie.iso` 误吞 `Movie2.zh-cn.srt`。
+            name.len() > base.len()
+                && name.as_bytes()[base.len()] == b'.'
+                && name
+                    .get(..base.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(base))
+        })
+        .max_by_key(|base| base.len())
+        .map(String::as_str)
 }
 
 /// 把源文件路径改写为对应的 `.strm` 输出路径。
@@ -310,6 +378,32 @@ mod tests {
         values.iter().map(|ext| (*ext).to_string()).collect()
     }
 
+    fn iso_bases(values: &[&str]) -> HashSet<String> {
+        exts(values)
+    }
+
+    /// 目录里没有 ISO 原盘时的调用（多数用例与 ISO 无关）。
+    fn lp(
+        full_path: &str,
+        name: &str,
+        source_dir: &str,
+        target_dir: &Path,
+        flatten_mode: bool,
+        bdmv_root: Option<&str>,
+        strm_exts: &HashSet<String>,
+    ) -> PathBuf {
+        local_path(
+            full_path,
+            name,
+            source_dir,
+            target_dir,
+            flatten_mode,
+            bdmv_root,
+            strm_exts,
+            &HashSet::new(),
+        )
+    }
+
     #[test]
     fn joins_alist_paths_without_double_slashes() {
         assert_eq!(join_alist_path("/", "movie.mkv"), "/movie.mkv");
@@ -348,7 +442,7 @@ mod tests {
     fn local_path_converts_video_ext_to_strm() {
         let target_dir = Path::new("/media/ani");
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/2026/01.mkv",
                 "01.mkv",
                 "/ani",
@@ -360,7 +454,7 @@ mod tests {
             PathBuf::from("/media/ani/2026/01.strm")
         );
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/2026/01.mkv",
                 "01.mkv",
                 "/ani",
@@ -380,7 +474,7 @@ mod tests {
 
         // ISO 保留源后缀：xxx.iso → xxx.iso.strm（两种模式规则一致）。
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/2026/沙丘.iso",
                 "沙丘.iso",
                 "/movies",
@@ -392,7 +486,7 @@ mod tests {
             PathBuf::from("/media/movies/2026/沙丘.iso.strm")
         );
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/沙丘.iso",
                 "沙丘.iso",
                 "/movies",
@@ -406,7 +500,7 @@ mod tests {
 
         // 大写后缀同样识别，输出统一小写。
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/DUNE.ISO",
                 "DUNE.ISO",
                 "/movies",
@@ -420,7 +514,7 @@ mod tests {
 
         // 非 ISO 的自定义后缀仍按替换规则输出。
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/DUNE.mkv",
                 "DUNE.mkv",
                 "/movies",
@@ -439,7 +533,7 @@ mod tests {
 
         // 未配置 .iso：保持原文件名，交给伴生文件下载流程处理。
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/沙丘.iso",
                 "沙丘.iso",
                 "/movies",
@@ -453,7 +547,7 @@ mod tests {
 
         // 只配置 .iso：视频后缀不再生成 .strm。
         assert_eq!(
-            local_path(
+            lp(
                 "/movies/DUNE.mkv",
                 "DUNE.mkv",
                 "/movies",
@@ -466,13 +560,169 @@ mod tests {
         );
     }
 
+    /// ISO 原盘同目录的伴生文件必须插上 `.iso`，媒体服务器才认领得到。
+    #[test]
+    fn companion_files_follow_iso_rename() {
+        let target_dir = Path::new("/media/movies");
+        let strm_exts = exts(&[".iso", ".mkv"]);
+        let bases = iso_bases(&["Hotel.Transylvania.2012.1080p.BluRay.AVC.DTS-HD.MA.5.1-FGT"]);
+        let movie = "Hotel.Transylvania.2012.1080p.BluRay.AVC.DTS-HD.MA.5.1-FGT";
+
+        // 非平铺：目录结构保留，只改文件名。
+        assert_eq!(
+            local_path(
+                &format!("/movies/2026/{movie}.zh-cn.srt"),
+                &format!("{movie}.zh-cn.srt"),
+                "/movies",
+                target_dir,
+                false,
+                None,
+                &strm_exts,
+                &bases
+            ),
+            PathBuf::from(format!("/media/movies/2026/{movie}.iso.zh-cn.srt"))
+        );
+
+        // 平铺：同样插 `.iso`。
+        assert_eq!(
+            local_path(
+                &format!("/movies/{movie}.zh-cn.srt"),
+                &format!("{movie}.zh-cn.srt"),
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &strm_exts,
+                &bases
+            ),
+            PathBuf::from(format!("/media/movies/{movie}.iso.zh-cn.srt"))
+        );
+
+        // 无语言标记、图片等其它伴生文件同一规则。
+        for (name, expected) in [
+            (format!("{movie}.srt"), format!("{movie}.iso.srt")),
+            (format!("{movie}.jpg"), format!("{movie}.iso.jpg")),
+        ] {
+            assert_eq!(
+                local_path(
+                    &format!("/movies/{name}"),
+                    &name,
+                    "/movies",
+                    target_dir,
+                    true,
+                    None,
+                    &strm_exts,
+                    &bases
+                ),
+                target_dir.join(expected)
+            );
+        }
+
+        // 已经按规范命名的文件不再重复插 `.iso`。
+        let already = format!("{movie}.iso.zh-cn.srt");
+        assert_eq!(
+            local_path(
+                &format!("/movies/{already}"),
+                &already,
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &strm_exts,
+                &bases
+            ),
+            target_dir.join(&already)
+        );
+    }
+
+    #[test]
+    fn companion_rename_respects_boundaries_and_config() {
+        let target_dir = Path::new("/media/movies");
+        let with_iso = exts(&[".iso", ".mkv"]);
+
+        // 目录里没有 ISO：字幕保持原名。
+        assert_eq!(
+            local_path(
+                "/movies/Movie.zh-cn.srt",
+                "Movie.zh-cn.srt",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &with_iso,
+                &HashSet::new()
+            ),
+            target_dir.join("Movie.zh-cn.srt")
+        );
+
+        // 只在「基名 + .」处匹配，Movie2 不会被 Movie 吞掉。
+        assert_eq!(
+            local_path(
+                "/movies/Movie2.zh-cn.srt",
+                "Movie2.zh-cn.srt",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &with_iso,
+                &iso_bases(&["Movie"])
+            ),
+            target_dir.join("Movie2.zh-cn.srt")
+        );
+
+        // 同时存在 A.iso 与 A.B.iso 时取最长匹配。
+        assert_eq!(
+            local_path(
+                "/movies/A.B.zh-cn.ass",
+                "A.B.zh-cn.ass",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &with_iso,
+                &iso_bases(&["A", "A.B"])
+            ),
+            target_dir.join("A.B.iso.zh-cn.ass")
+        );
+
+        // 大小写不一致也能匹配，输出统一用 ISO 文件本身的写法。
+        assert_eq!(
+            local_path(
+                "/movies/HOTEL.zh-cn.srt",
+                "HOTEL.zh-cn.srt",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &with_iso,
+                &iso_bases(&["Hotel"])
+            ),
+            target_dir.join("Hotel.iso.zh-cn.srt")
+        );
+
+        // 没把 .iso 配置成生成 .strm：不存在 xxx.iso.strm，就不该改名。
+        assert_eq!(
+            local_path(
+                "/movies/Movie.zh-cn.srt",
+                "Movie.zh-cn.srt",
+                "/movies",
+                target_dir,
+                true,
+                None,
+                &exts(&[".mkv"]),
+                &iso_bases(&["Movie"])
+            ),
+            target_dir.join("Movie.zh-cn.srt")
+        );
+    }
+
     #[test]
     fn local_path_rejects_parent_directory_escapes() {
         let target_dir = Path::new("/media/ani");
 
         // `..` 片段会被丢弃，不会上跳出 target_dir。
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/../../etc/cron.d/evil.mkv",
                 "evil.mkv",
                 "/ani",
@@ -486,7 +736,7 @@ mod tests {
 
         // 绝对路径形式的文件名不会替换掉 target_dir。
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/x.mkv",
                 "/etc/passwd",
                 "/ani",
@@ -499,7 +749,7 @@ mod tests {
         );
 
         // 纯 `..` 名称回退为 unnamed，仍然留在 target_dir 内。
-        let escaped = local_path(
+        let escaped = lp(
             "/ani/..",
             "..",
             "/ani",
@@ -514,7 +764,7 @@ mod tests {
     #[test]
     fn local_path_stays_inside_target_dir_for_bdmv() {
         let target_dir = Path::new("/media/ani");
-        let path = local_path(
+        let path = lp(
             "/ani/../../etc/BDMV/STREAM/00001.m2ts",
             "00001.m2ts",
             "/ani",
@@ -548,7 +798,7 @@ mod tests {
 
         // 保留设备名加前缀，否则 Windows 直接拒绝创建。
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/CON",
                 "CON",
                 "/ani",
@@ -564,7 +814,7 @@ mod tests {
         // 注意 `:` 会被 `Path` 当成盘符前缀直接丢弃，这里用文件系统同样拒绝的
         // `?` / `*` 来验证字符替换。
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/a?b*.mkv",
                 "a?b*.mkv",
                 "/ani",
@@ -578,7 +828,7 @@ mod tests {
 
         // 结尾的点会被系统静默忽略，这里主动裁掉，避免「名字对不上」。
         assert_eq!(
-            local_path(
+            lp(
                 "/ani/trailing.",
                 "trailing.",
                 "/ani",
