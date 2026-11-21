@@ -136,7 +136,8 @@ pub struct AdminContext {
     /// MediaWarp 反向代理子进程的托管句柄；业务配置保存时按新配置热重启。
     pub mediawarp: Arc<Supervisor>,
     pub guard: auth::LoginGuard,
-    /// 登录页签发/校验的会话表（仅存内存，重启即失效）。
+    /// 登录页签发/校验的会话表（落盘在 web.yaml 同目录，重启后仍有效；
+    /// 用户名或密码变更时立即作废）。
     pub sessions: auth::SessionStore,
     pub schema: serde_json::Value,
     pub commands: mpsc::Sender<AdminCommand>,
@@ -313,13 +314,21 @@ impl Runtime {
             .to_path_buf();
         let mediawarp = Arc::new(Supervisor::new(mediawarp_base));
 
+        // 会话表与会话文件都要在启动时按当前凭据初始化：文件里的旧会话只有在
+        // 用户名/密码未变时才继续有效，这样「改密码 = 全部踢下线」在停机期间
+        // 改配置的场景下同样成立。
+        let sessions = auth::SessionStore::load(
+            Some(auth::SessionStore::path_for(web_config_path.as_path())),
+            &auth::AuthConfig::new(web_config.username.clone(), web_config.password.clone()),
+        );
+
         let ctx = Arc::new(AdminContext {
             store,
             web_store,
             web: Mutex::new(None),
             mediawarp: mediawarp.clone(),
             guard: auth::LoginGuard::default(),
-            sessions: auth::SessionStore::new(),
+            sessions,
             schema: schema::schema(),
             commands: command_tx,
             status: Mutex::new(RuntimeStatus {
@@ -755,7 +764,12 @@ fn apply_web(ctx: &Arc<AdminContext>, web: WebConfig, source: ReloadSource) -> A
     }
 
     if previous.username != web.username || previous.password != web.password {
-        ctx.sessions.clear();
+        // 同时刷新会话文件里的凭据指纹：否则下次启动会把旧凭据的会话重新
+        // 加载回来（文件里存的是变更前的指纹）。
+        ctx.sessions.reset_for_credentials(&auth::AuthConfig::new(
+            web.username.clone(),
+            web.password.clone(),
+        ));
         info!("面板认证信息已实时更新，旧登录会话全部失效");
     }
 

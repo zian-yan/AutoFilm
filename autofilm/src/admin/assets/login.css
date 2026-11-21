@@ -313,6 +313,15 @@ body::before {
   cursor: default;
 }
 
+/* 登录有效期的说明：辅助信息，字号与颜色都弱于表单标签，不抢「登录」按钮的注意力 */
+.login-hint {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-label);
+  line-height: 1.5;
+  color: var(--faint);
+  text-align: center;
+}
+
 .error {
   margin: 0;
   padding: 11px var(--s-3);

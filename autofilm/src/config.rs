@@ -360,11 +360,11 @@ fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// 写入配置文件内容。
+/// 写入敏感文件内容。
 ///
-/// 配置里含有 AList 密码/令牌与媒体服务器 API Key。Unix 下按 0600 创建，
-/// 避免同机其他用户直接读到明文密钥；其他平台沿用默认行为。
-fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+/// 配置与会话文件都含有等同于凭据的内容。Unix 下按 0600 创建，避免同机其他
+/// 用户直接读到明文；其他平台沿用默认行为。
+pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::{io::Write, os::unix::fs::OpenOptionsExt};
